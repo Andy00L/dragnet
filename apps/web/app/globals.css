@@ -1,0 +1,461 @@
+/*
+  Dragnet warm-paper design system. Tokens first (mirrors docs/UI_DESIGN_SYSTEM.md
+  and lib/tokens.ts), then the shared primitives ported from the approved Claude
+  Design exports. Values are the sheet's own; components read these classes and CSS
+  variables, never loose literals. Elevation is tonal (a raised surface plus a
+  self-coloured edge and a top lip), never a drop shadow. Grain sits on the paper
+  substrate, behind content.
+*/
+
+:root {
+  --paper: #ece6d8;
+  --surface: #f4efe3;
+  --well: #e4ddcc;
+  --ink: #22201b;
+  --muted: #6e6656;
+  --faint: #a79d89;
+  --accent: #1f5b52;
+  --accent-soft: #d7e2db;
+  --accent-deep: #16443e;
+  --paid: #3e7b4f;
+  --paid-soft: #dce7da;
+  --pending: #b07a24;
+  --pending-soft: #ede2c7;
+  --error: #a83a2b;
+  --error-soft: #eedad3;
+  --error-edge: #dfc3b9;
+  --edge: #d9d1be;
+  --highlight: #fcf8ef;
+
+  --content-max: 1120px;
+  --prose-max: 680px;
+  --work-max: 900px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Fine film grain on the paper substrate, behind every layer, never over text. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-deep);
+}
+
+/* Type roles. Gambarino (self-hosted display) carries headings, the wordmark and
+   the one big figure; system-ui the body; ui-monospace is data only. */
+.font-display {
+  font-family: var(--font-gambarino), Georgia, "Times New Roman", serif;
+  font-weight: 400;
+}
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.wordmark {
+  font-family: var(--font-gambarino), Georgia, serif;
+  font-size: 22px;
+  color: var(--ink);
+}
+.h1 {
+  font-family: var(--font-gambarino), Georgia, serif;
+  font-size: 40px;
+  line-height: 1.08;
+  letter-spacing: -0.01em;
+  font-weight: 400;
+  margin: 0;
+}
+.h2 {
+  font-family: var(--font-gambarino), Georgia, serif;
+  font-size: 20px;
+  line-height: 1.25;
+  font-weight: 400;
+  margin: 0;
+}
+.display30 {
+  font-family: var(--font-gambarino), Georgia, serif;
+  font-size: 30px;
+  line-height: 1.15;
+  font-weight: 400;
+}
+.lead {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--muted);
+  margin: 8px 0 0;
+  text-wrap: pretty;
+}
+.small {
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.muted {
+  color: var(--muted);
+}
+.faint {
+  color: var(--faint);
+}
+
+/* Layout shells. The page content sits above the grain (z-index 1). */
+.rail {
+  border-bottom: 1px solid var(--edge);
+  position: relative;
+  z-index: 1;
+}
+.rail-inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 0 32px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.page {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 36px 32px 64px;
+  position: relative;
+  z-index: 1;
+}
+.page-prose {
+  max-width: var(--prose-max);
+  margin: 0 auto;
+  padding: 36px 32px 64px;
+  position: relative;
+  z-index: 1;
+}
+.page-work {
+  max-width: var(--work-max);
+  margin: 0 auto;
+  padding: 36px 32px 64px;
+  position: relative;
+  z-index: 1;
+}
+
+/* Tonal card: a raised surface, a self-coloured edge, an inner top lip. No shadow. */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 var(--highlight);
+}
+.card-12 {
+  border-radius: 12px;
+}
+.error-card {
+  background: var(--error-soft);
+  border: 1px solid var(--error-edge);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 var(--highlight);
+}
+
+/* Buttons. Fill or tonal shift on hover, never a lift or scale. */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--surface);
+  background: var(--accent);
+  border: none;
+  border-radius: 6px;
+  padding: 12px 20px;
+  min-height: 46px;
+  box-sizing: border-box;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.btn-primary:hover {
+  background: var(--accent-deep);
+  color: var(--surface);
+  text-decoration: none;
+}
+.btn-primary:disabled {
+  background: var(--faint);
+  cursor: default;
+}
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 10px 16px;
+  min-height: 44px;
+  cursor: pointer;
+  transition: background-color 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.btn-ghost:hover {
+  background: var(--accent-soft);
+}
+.btn-outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  font-family: system-ui, sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 13px 18px;
+  min-height: 46px;
+  cursor: pointer;
+  transition: background-color 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.btn-outline:hover {
+  background: var(--accent-soft);
+}
+.link-retry {
+  font-family: system-ui, sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--error);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--error);
+  padding: 10px 2px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+/* One visible focus treatment everywhere: a 3px accent-soft ring. */
+:where(a, button, input, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-radius: 4px;
+}
+
+/* Form trough: the well tone with a self-coloured edge, not a floating box. */
+.field {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: var(--well);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 12px;
+  min-height: 44px;
+}
+.field:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.field-error {
+  border-color: var(--error);
+}
+.field-label {
+  display: block;
+  font-size: 13.5px;
+  line-height: 1.45;
+  font-weight: 500;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+.inline-error {
+  margin-top: 6px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--error);
+  background: var(--error-soft);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+/* The reserved paid ink-stamp: used once per screen, pressed slightly askew. */
+.paid-stamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-gambarino), Georgia, serif;
+  color: var(--paid);
+  border: 1.5px solid var(--paid);
+  border-radius: 6px;
+  padding: 3px 10px;
+  background: var(--paid-soft);
+  transform: rotate(-3deg);
+}
+
+/* Section heading with a solid self-coloured underline. */
+.section-h2 {
+  font-family: var(--font-gambarino), Georgia, serif;
+  font-size: 20px;
+  line-height: 1.25;
+  font-weight: 400;
+  margin: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--edge);
+}
+
+/* Authored motion. Content is present without JS; entrances animate a small y on
+   already-visible content. The net wash and the ink stamps are the hero moments. */
+@keyframes settleY {
+  from {
+    transform: translateY(10px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@keyframes settleY8 {
+  from {
+    transform: translateY(8px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+@keyframes washIn {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@keyframes stampIn {
+  from {
+    opacity: 0;
+    transform: rotate(-6deg) scale(1.06);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(-3deg) scale(1);
+  }
+}
+@keyframes markStamp {
+  0% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Ledger rows: a tonal shift to the paper tone on hover, never a lift. */
+.ledger-row {
+  transition: background-color 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.ledger-row:hover {
+  background: var(--paper);
+  color: var(--ink);
+}
+.log-row {
+  transition: background-color 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.log-row:hover {
+  background: var(--surface);
+}
+
+/* Plain text filter toggles: the active one carries a short inked bar that is part
+   of the mark, not a growing-underline hover. */
+.filter-btn {
+  font-family: system-ui, sans-serif;
+  font-size: 15px;
+  background: transparent;
+  border: none;
+  padding: 10px 0 0;
+  min-height: 44px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+.filter-btn:hover {
+  color: var(--ink);
+}
+.unit-btn {
+  font-family: system-ui, sans-serif;
+  font-size: 13.5px;
+  background: transparent;
+  border: none;
+  padding: 10px 0 4px;
+  min-height: 44px;
+  cursor: pointer;
+}
+.unit-btn:hover {
+  color: var(--ink);
+}
+.step-btn {
+  font-size: 17px;
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  width: 44px;
+  min-height: 44px;
+  cursor: pointer;
+  transition: background-color 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.step-btn:hover {
+  background: var(--accent-soft);
+}
+.mode-btn {
+  font-family: system-ui, sans-serif;
+  font-size: 13.5px;
+  border: none;
+  border-radius: 4px;
+  padding: 10px 14px;
+  min-height: 40px;
+  cursor: pointer;
+  transition:
+    background-color 130ms cubic-bezier(0.4, 0, 0.2, 1),
+    color 130ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.copy-data {
+  cursor: copy;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
