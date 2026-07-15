@@ -13,6 +13,7 @@ import {
   leafForHash160,
   pointForKey,
   proofForIndex,
+  targetListMatchesRoot,
   verifyProof,
 } from "../src/index.js";
 
@@ -155,6 +156,29 @@ describe("end-to-end: build a bounty and a valid reveal", () => {
     const list: Hex[] = [hash160ForKeyOrThrow(1n)];
     const reveal = buildReveal([2n], list);
     expect(reveal.ok).toBe(false);
+  });
+});
+
+describe("target list root verification", () => {
+  test("accepts the published list and rejects a tampered or empty one", () => {
+    const rng = seededRandomBytes(11);
+    const canaries = generateCanaries(1n, 100_000n, 4, rng);
+    expect(canaries.ok).toBe(true);
+    if (!canaries.ok) return;
+    const list = buildTargetList(canaries.value, [], rng);
+    expect(list.ok).toBe(true);
+    if (!list.ok) return;
+
+    // The published list rebuilds to the published root.
+    expect(targetListMatchesRoot(list.value.addresses, list.value.tree.root)).toBe(true);
+
+    // Swapping any single address breaks the match.
+    const tampered = [...list.value.addresses];
+    tampered[0] = hash160ForKeyOrThrow(999_999n);
+    expect(targetListMatchesRoot(tampered, list.value.tree.root)).toBe(false);
+
+    // An empty list never matches a nonzero root.
+    expect(targetListMatchesRoot([], list.value.tree.root)).toBe(false);
   });
 });
 

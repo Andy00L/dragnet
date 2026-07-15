@@ -4,6 +4,11 @@ import { type Hex, type Result, err, ok } from "./types.js";
 /// Sorted-pair keccak256 Merkle tree that matches contracts/src/MerkleProof.sol.
 /// A leaf for a 20-byte hash160 is keccak256(hash160), i.e. keccak256 of the raw
 /// bytes, which equals the contract's keccak256(abi.encodePacked(bytes20)).
+///
+/// Second-preimage note: a leaf hashes 20 bytes while an internal node hashes 64
+/// bytes, so a node can never be presented as a leaf. Keep this length separation.
+/// If a double-hashed leaf is ever adopted, the contract, this file, and every
+/// CrossCheck fixture must change together or parity breaks silently.
 export function leafForHash160(hash160: Hex): Hex {
   return keccak256(hash160);
 }
@@ -54,6 +59,27 @@ export function buildTree(leaves: Hex[]): Result<MerkleTree> {
     return err("Merkle tree has no root");
   }
   return ok({ root, layers });
+}
+
+/// Build the sorted-pair tree over hash160 addresses, hashing each to its leaf
+/// (keccak256 of the 20-byte value). Shared by the buyer, which publishes the
+/// resulting root, and by any client that must rebuild the published list to check
+/// it against the on-chain root. Keeps the leaf-encoding step in exactly one place.
+export function treeForAddresses(addresses: Hex[]): Result<MerkleTree> {
+  return buildTree(addresses.map(leafForHash160));
+}
+
+/// True iff the published hash160 list rebuilds to `expectedRoot`. A worker calls
+/// this before trusting a target list read back from a BountyPosted event: only the
+/// on-chain root is authoritative (see DragnetMarket.postBounty NatSpec), and the
+/// contract does not check the emitted list against the root at post time. An empty
+/// or mismatched list returns false.
+export function targetListMatchesRoot(addresses: Hex[], expectedRoot: Hex): boolean {
+  const tree = treeForAddresses(addresses);
+  if (!tree.ok) {
+    return false;
+  }
+  return tree.value.root.toLowerCase() === expectedRoot.toLowerCase();
 }
 
 /// The proof (sibling hashes bottom-up) for the leaf at `index`.

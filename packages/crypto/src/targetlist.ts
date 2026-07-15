@@ -15,6 +15,9 @@ export function addressesToBytes(addresses: Hex[]): Hex {
 /// Parse the emitted `targetList` bytes back into hash160 addresses.
 export function bytesToAddresses(data: Hex): Result<Hex[]> {
   const bytes = hexToBytes(data);
+  if (bytes.length === 0) {
+    return err("target list is empty");
+  }
   if (bytes.length % HASH160_BYTES !== 0) {
     return err(`target list length ${bytes.length} is not a multiple of ${HASH160_BYTES}`);
   }

@@ -1,5 +1,5 @@
 import { pointForKey, hash160ForKey } from "./secp256k1.js";
-import { buildTree, leafForHash160, proofForIndex } from "./merkle.js";
+import { proofForIndex, treeForAddresses } from "./merkle.js";
 import { type Hex, type Result, type RevealPayload, err, ok } from "./types.js";
 
 /// Build the reveal payload for a set of found keys against the published target
@@ -11,7 +11,7 @@ export function buildReveal(foundKeys: bigint[], addresses: Hex[]): Result<Revea
     left < right ? -1 : left > right ? 1 : 0,
   );
 
-  const tree = buildTree(addresses.map(leafForHash160));
+  const tree = treeForAddresses(addresses);
   if (!tree.ok) {
     return tree;
   }

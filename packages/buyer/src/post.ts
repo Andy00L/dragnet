@@ -19,6 +19,9 @@ export interface PostOptions {
   claimWindow: bigint;
   openWindow: bigint;
   /// hash160 of any real targets to mix in (e.g. the puzzle address). Optional.
+  /// Only mix in targets whose keys are OUTSIDE [lo, hi]: this is the exclusion
+  /// use. An in-range real target is unsafe (see buildTargetList safety note in
+  /// packages/crypto/src/canary.ts).
   realTargets?: Hex[];
   rng?: RandomBytes;
 }

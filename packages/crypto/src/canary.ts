@@ -1,6 +1,6 @@
 import { bytesToBigInt } from "viem";
-import { hash160ForKey } from "./secp256k1.js";
-import { type MerkleTree, buildTree, leafForHash160 } from "./merkle.js";
+import { N, hash160ForKey } from "./secp256k1.js";
+import { type MerkleTree, treeForAddresses } from "./merkle.js";
 import { type Hex, type Result, err, ok } from "./types.js";
 
 /// Injectable source of random bytes so tests can be deterministic. Defaults to
@@ -50,6 +50,16 @@ export function generateCanaries(
   count: number,
   rng: RandomBytes = secureRandomBytes,
 ): Result<bigint[]> {
+  if (lo < 1n) {
+    // Private keys are [1, N-1]; key 0 has no valid public point. Matches the
+    // contract's lo == 0 rejection in DragnetMarket.postBounty.
+    return err(`lo must be at least 1, got ${lo}`);
+  }
+  if (hi >= N) {
+    // Keys at or above the group order are invalid. Matches the contract's
+    // hi >= N rejection in DragnetMarket.postBounty.
+    return err(`hi must be below the secp256k1 group order N, got ${hi}`);
+  }
   if (hi <= lo) {
     return err(`range invalid: hi (${hi}) must exceed lo (${lo})`);
   }
@@ -83,6 +93,14 @@ export interface TargetList {
 /// Build the shuffled target list and its Merkle tree from canary keys plus any
 /// real target addresses (already hash160). Shuffling makes canaries and real
 /// targets indistinguishable in the published list.
+///
+/// Safety: `realTargets` are meant for exclusion, where the real key is NOT in
+/// [lo, hi]. If a real target's key were inside the range, a full-coverage worker
+/// would find m + 1 keys (the m canaries plus the target), so the reveal of exactly
+/// m keys either reverts LengthMismatch or, if the worker drops a canary instead of
+/// the indistinguishable target, publishes the real target's private key on-chain.
+/// The contract cannot detect this (it never learns the target's key). Only mix in
+/// real targets whose keys are outside the bounty range.
 export function buildTargetList(
   canaryKeys: bigint[],
   realTargets: Hex[] = [],
@@ -97,7 +115,7 @@ export function buildTargetList(
     canaryHash160s.push(hashed.value);
   }
   const addresses = shuffle([...canaryHash160s, ...realTargets], rng);
-  const tree = buildTree(addresses.map(leafForHash160));
+  const tree = treeForAddresses(addresses);
   if (!tree.ok) {
     return tree;
   }
