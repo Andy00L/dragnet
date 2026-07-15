@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { type Address, type Hex, toHex } from "viem";
 import { MarketClient, loadConfig } from "@dragnet/sdk";
-import { runWorker } from "./worker.js";
+import { runWorker } from "./worker";
 
 interface ParsedArgs {
   bountyId: bigint;

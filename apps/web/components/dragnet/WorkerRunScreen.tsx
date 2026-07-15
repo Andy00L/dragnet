@@ -2,9 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { isAddress } from "viem";
+import type { Hex } from "viem";
 import { TopRail } from "./TopRail";
+import { useWallet } from "./WalletProvider";
+import { clientMarketConfig } from "@/lib/client-config";
+import { commitAndReveal, loadRunTarget, sweepKeyspace, withdrawPayout } from "@/lib/run-onchain";
 import { palette } from "@/lib/tokens";
-import { formatBound, groupDigits } from "@/lib/format";
+import { formatBound, truncateHex } from "@/lib/format";
 
 export interface RunContext {
   id: string;
@@ -21,15 +26,25 @@ type Mode = "full" | "skip";
 const PHASE_ORDER: Record<Phase, number> = { idle: 0, sweeping: 1, committing: 2, returning: 3, paid: 4, zero: 4 };
 const SKIP_TARGET = 0.85;
 
+// Demo-mode step details, shown when no market is configured. In real mode the
+// live transaction hashes and revert reason replace these.
+const DEMO_COMMIT_TX = "0x54ebfb…b54c3";
+const DEMO_REVEAL_TX = "0x9f2a…e71";
+const DEMO_REVERT = "revert LengthMismatch";
+
 function prefersReduced(): boolean {
   return typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 // The worker run: drag the net through the range and land honestly on Paid or
-// earned-zero. The sweep, commit, return and settle are the protocol's own beats,
-// visualised; the outcome is exhaustive-versus-partial, the point of the whole
-// mechanism.
+// earned-zero. When a market is configured and a wallet is connected, the sweep is
+// real (an in-browser keyspace search reusing @dragnet/scanner) and the commit and
+// reveal are real transactions; otherwise the same beats play as a demonstration.
 export function WorkerRunScreen({ context }: { context: RunContext }) {
+  const wallet = useWallet();
+  const config = useMemo(() => clientMarketConfig(), []);
+  const real = config !== null;
+
   const totalKeys = useMemo(() => {
     try {
       return BigInt(context.hi) - BigInt(context.lo) + 1n;
@@ -45,10 +60,22 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
   const [payoutDisplay, setPayoutDisplay] = useState("0.000");
   const [withdrawn, setWithdrawn] = useState(false);
 
+  // Real-mode state. In demo mode these keep their demo defaults / stay null.
+  const [realError, setRealError] = useState<string | null>(null);
+  const [foundReal, setFoundReal] = useState<number | null>(null);
+  const [commitDetail, setCommitDetail] = useState(DEMO_COMMIT_TX);
+  const [revealDetail, setRevealDetail] = useState(DEMO_REVEAL_TX);
+  const [revertLabel, setRevertLabel] = useState(DEMO_REVERT);
+  const [withdrawTx, setWithdrawTx] = useState<Hex | null>(null);
+
   const raf = useRef<number | null>(null);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Bumped on every start and every reset; an in-flight real run bails when its
+  // captured token no longer matches, so a reset or unmount cancels it cleanly.
+  const runToken = useRef(0);
 
   const clearRun = () => {
+    runToken.current++;
     if (raf.current !== null) {
       cancelAnimationFrame(raf.current);
       raf.current = null;
@@ -81,6 +108,7 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
     raf.current = requestAnimationFrame(step);
   };
 
+  // Demo sweep (no chain): animate the net, then land on paid or earned-zero.
   const afterSweep = (runMode: Mode) => {
     timers.current.push(setTimeout(() => setPhase("committing"), 500));
     timers.current.push(setTimeout(() => setPhase("returning"), 1600));
@@ -123,6 +151,106 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
     raf.current = requestAnimationFrame(step);
   };
 
+  // Real run: load and verify the target list, sweep the keyspace in the browser,
+  // then commit and reveal on chain. Each await checks its run token so a reset
+  // mid-flight abandons the stale run instead of writing its state back.
+  const startRealRun = async (runMode: Mode) => {
+    const provider = typeof window !== "undefined" ? window.ethereum : undefined;
+    if (config === null || wallet.address === null || provider === undefined || !isAddress(wallet.address)) {
+      setRealError("connect a wallet on the configured network to sweep");
+      return;
+    }
+    const worker = wallet.address;
+    const token = ++runToken.current;
+    setRealError(null);
+    setFoundReal(0);
+    setWithdrawn(false);
+    setWithdrawTx(null);
+    setPayoutDisplay("0.000");
+    setProgress(0);
+    setPhase("sweeping");
+
+    let bountyId: bigint;
+    try {
+      bountyId = BigInt(context.id);
+    } catch {
+      setRealError(`invalid bounty id ${context.id}`);
+      return;
+    }
+
+    const loaded = await loadRunTarget(config, bountyId);
+    if (runToken.current !== token) return;
+    if (!loaded.ok) {
+      setRealError(loaded.error);
+      return;
+    }
+    const bountyTarget = loaded.value;
+
+    const skipFraction = runMode === "skip" ? 1 - SKIP_TARGET : 0;
+    const swept = await sweepKeyspace(bountyTarget, skipFraction, (fraction, found) => {
+      if (runToken.current !== token) return;
+      setProgress(runMode === "skip" ? fraction * SKIP_TARGET : fraction);
+      setFoundReal(found);
+    });
+    if (runToken.current !== token) return;
+    if (!swept.ok) {
+      setRealError(swept.error);
+      return;
+    }
+
+    const outcome = await commitAndReveal(provider, worker, config, bountyId, swept.value, bountyTarget, (stage) => {
+      if (runToken.current !== token) return;
+      setPhase(stage);
+    });
+    if (runToken.current !== token) return;
+    if (!outcome.ok) {
+      setRealError(outcome.error);
+      return;
+    }
+
+    const done = outcome.value;
+    if (done.commitTx !== undefined) {
+      setCommitDetail(truncateHex(done.commitTx, 8, 5));
+    }
+    if (done.paid && done.revealTx !== undefined) {
+      setRevealDetail(truncateHex(done.revealTx, 8, 5));
+      setPhase("paid");
+      countPayout();
+    } else {
+      setRevertLabel(done.revertReason !== undefined ? `revert ${done.revertReason}` : "earned zero");
+      setPhase("zero");
+    }
+  };
+
+  const startRun = () => {
+    if (phase !== "idle") return;
+    clearRun();
+    if (real) {
+      void startRealRun(mode);
+    } else {
+      startSweep();
+    }
+  };
+
+  const onWithdraw = async () => {
+    if (!real) {
+      setWithdrawn(true);
+      return;
+    }
+    const provider = typeof window !== "undefined" ? window.ethereum : undefined;
+    if (config === null || wallet.address === null || provider === undefined || !isAddress(wallet.address)) {
+      setRealError("connect a wallet to withdraw");
+      return;
+    }
+    const result = await withdrawPayout(provider, wallet.address, config);
+    if (result.ok) {
+      setWithdrawTx(result.value);
+      setWithdrawn(true);
+    } else {
+      setRealError(result.error);
+    }
+  };
+
   const resetTo = (nextMode: Mode) => {
     clearRun();
     setMode(nextMode);
@@ -130,12 +258,19 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
     setProgress(0);
     setPayoutDisplay("0.000");
     setWithdrawn(false);
+    setRealError(null);
+    setFoundReal(null);
+    setWithdrawTx(null);
   };
 
   const idx = PHASE_ORDER[phase];
   const running = idx >= 1 && idx <= 3;
   const settled = idx === 4;
-  const workerAddr = skipMode ? "0x3C44…93BC" : "0x7099…79C8";
+  // The big error overlay shows for an operational failure; a withdraw failure
+  // after payment is surfaced inline instead so the Paid card stays.
+  const errored = realError !== null && phase !== "paid";
+  const demoAddr = skipMode ? "0x3C44…93BC" : "0x7099…79C8";
+  const workerAddr = real ? wallet.addressShort ?? "connect wallet" : demoAddr;
 
   const marks = useMemo(() => {
     const numericId = Number(context.id) || 42;
@@ -150,13 +285,19 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
   }, [context.id, context.m]);
 
   const caughtMarks = marks.map((mark) => ({ ...mark, caught: idx >= 1 && mark.fraction <= target && progress >= mark.fraction }));
-  const caught = caughtMarks.filter((mark) => mark.caught).length;
+  const visualCaught = caughtMarks.filter((mark) => mark.caught).length;
+  const caught = real && foundReal !== null ? foundReal : visualCaught;
   const sweptLabel = formatBound((totalKeys * BigInt(Math.round(progress * 1_000_000))) / 1_000_000n);
   const totalLabel = formatBound(totalKeys);
   const sweptFullLabel = formatBound((totalKeys * BigInt(Math.round(target * 1_000_000))) / 1_000_000n);
   const washW = Math.round(816 * progress * 10) / 10;
   const frontierX = Math.round((12 + 816 * progress) * 10) / 10;
   const hasFrontier = progress > 0.001 && progress < 0.999;
+  const shortSweep = foundReal !== null && foundReal < context.m;
+  const zeroExplains =
+    !real || shortSweep
+      ? "A partial sweep misses a canary; that is the whole design."
+      : "The return did not settle on chain; nothing was paid.";
 
   const steps = [
     {
@@ -170,7 +311,7 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
     {
       name: "Commit",
       order: 2,
-      detail: idx > 2 ? "0x54ebfb…b54c3" : false,
+      detail: idx > 2 ? commitDetail : false,
       detailColor: palette.muted,
       note: idx === 2 ? "waiting for the next block, the return must land in a later block than the commit" : false,
       noteColor: palette.pending,
@@ -178,7 +319,7 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
     {
       name: "Return",
       order: 3,
-      detail: idx > 3 ? (phase === "zero" ? "revert LengthMismatch" : "0x9f2a…e71") : false,
+      detail: idx > 3 ? (phase === "zero" ? revertLabel : revealDetail) : false,
       detailColor: phase === "zero" ? palette.error : palette.muted,
       note: false as string | false,
       noteColor: palette.muted,
@@ -310,13 +451,18 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
           <section style={{ flex: "1 1 300px", minWidth: 0, display: "flex", flexDirection: "column" }}>
             <h2 className="section-h2">The outcome</h2>
 
-            {phase === "idle" ? (
+            {errored ? (
+              <div aria-live="polite" className="error-card" style={{ marginTop: 16, padding: "20px 22px", animation: "settleY 220ms cubic-bezier(0.16,1,0.3,1) both" }}>
+                <p style={{ fontSize: 15, lineHeight: 1.55, fontWeight: 600, color: palette.error, margin: 0 }}>The sweep could not complete</p>
+                <p className="small" style={{ color: palette.ink, margin: "6px 0 0", overflowWrap: "anywhere" }}>{realError}</p>
+              </div>
+            ) : phase === "idle" ? (
               <p className="lead" style={{ margin: "16px 0 0" }}>Nothing has been dragged yet. The record lands here once the net has crossed the range.</p>
+            ) : running ? (
+              <p aria-live="polite" style={{ fontSize: 15, lineHeight: 1.55, color: palette.muted, margin: "16px 0 0" }}>{runningLine}</p>
             ) : null}
 
-            {running ? <p aria-live="polite" style={{ fontSize: 15, lineHeight: 1.55, color: palette.muted, margin: "16px 0 0" }}>{runningLine}</p> : null}
-
-            {phase === "paid" ? (
+            {!errored && phase === "paid" ? (
               <div aria-live="polite" className="card" style={{ marginTop: 16, padding: "20px 22px" }}>
                 <span className="paid-stamp" style={{ fontSize: 15, animation: "stampIn 220ms cubic-bezier(0.34,1.4,0.5,1) both" }}>✓ Paid</span>
                 <div className="display30 mono" style={{ marginTop: 12 }}>{payoutDisplay} <span style={{ fontSize: 15, color: palette.muted }}>MON</span></div>
@@ -324,22 +470,37 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
               </div>
             ) : null}
 
-            {phase === "zero" ? (
+            {!errored && phase === "zero" ? (
               <div aria-live="polite" style={{ marginTop: 16, animation: "settleY 220ms cubic-bezier(0.16,1,0.3,1) both" }}>
                 <p style={{ fontSize: 15, lineHeight: 1.55, fontWeight: 600, color: palette.muted, margin: 0 }}>Earned zero</p>
-                <p className="mono small" style={{ color: palette.muted, margin: "6px 0 0" }}>revert LengthMismatch · 0.000 MON</p>
-                <p className="small muted" style={{ margin: "8px 0 0", textWrap: "pretty" }}>A partial sweep misses a canary; that is the whole design.</p>
+                <p className="mono small" style={{ color: palette.muted, margin: "6px 0 0" }}>{revertLabel} · 0.000 MON</p>
+                <p className="small muted" style={{ margin: "8px 0 0", textWrap: "pretty" }}>{zeroExplains}</p>
               </div>
             ) : null}
 
             <div style={{ marginTop: "auto", paddingTop: 20 }}>
-              {phase === "idle" ? (
-                <button type="button" className="btn-primary" style={{ width: "100%" }} onClick={() => { if (phase === "idle") { clearRun(); startSweep(); } }}>Start the sweep</button>
+              {errored ? (
+                <button type="button" className="btn-outline" onClick={() => resetTo(mode)}>Start over</button>
+              ) : phase === "idle" ? (
+                real && wallet.address === null ? (
+                  <button type="button" className="btn-primary" style={{ width: "100%" }} onClick={wallet.connect} disabled={wallet.connecting}>{wallet.connecting ? "Connecting…" : "Connect wallet to sweep"}</button>
+                ) : (
+                  <button type="button" className="btn-primary" style={{ width: "100%" }} onClick={startRun}>Start the sweep</button>
+                )
+              ) : running ? (
+                <button type="button" className="btn-primary" style={{ width: "100%" }} disabled>{runningCta}</button>
+              ) : phase === "paid" && !withdrawn ? (
+                <button type="button" className="btn-primary" style={{ width: "100%" }} onClick={() => void onWithdraw()}>Withdraw</button>
+              ) : phase === "paid" && withdrawn ? (
+                <p className="mono small" style={{ color: palette.ink, margin: 0, padding: "12px 0" }}>
+                  withdrawn to {workerAddr} ✓{withdrawTx !== null ? ` (${truncateHex(withdrawTx, 6, 4)})` : ""}
+                </p>
+              ) : phase === "zero" ? (
+                <button type="button" className="btn-outline" onClick={() => resetTo("full")}>Sweep the full range</button>
               ) : null}
-              {running ? <button type="button" className="btn-primary" style={{ width: "100%" }} disabled>{runningCta}</button> : null}
-              {phase === "paid" && !withdrawn ? <button type="button" className="btn-primary" style={{ width: "100%" }} onClick={() => setWithdrawn(true)}>Withdraw</button> : null}
-              {phase === "paid" && withdrawn ? <p className="mono small" style={{ color: palette.ink, margin: 0, padding: "12px 0" }}>withdrawn to {workerAddr} ✓</p> : null}
-              {phase === "zero" ? <button type="button" className="btn-outline" onClick={() => resetTo("full")}>Sweep the full range</button> : null}
+              {phase === "paid" && realError !== null ? (
+                <p className="small" style={{ color: palette.error, margin: "8px 0 0" }}>{realError}</p>
+              ) : null}
             </div>
           </section>
         </div>

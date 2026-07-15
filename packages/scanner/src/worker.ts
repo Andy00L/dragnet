@@ -1,7 +1,7 @@
 import type { Address } from "viem";
 import { type Hex, buildReveal, commitHash, targetListMatchesRoot } from "@dragnet/crypto";
 import { BountyStatus, type MarketClient } from "@dragnet/sdk";
-import { scanRange } from "./scan.js";
+import { scanRange } from "./scan";
 
 export interface WorkerOptions {
   bountyId: bigint;

@@ -81,7 +81,7 @@ function chainIdOf(value: unknown): number | null {
 }
 
 // Make sure the injected wallet is on the configured chain, requesting a switch if not.
-async function ensureChain(provider: Eip1193Provider, config: ClientMarketConfig): Promise<Result<true>> {
+export async function ensureChain(provider: Eip1193Provider, config: ClientMarketConfig): Promise<Result<true>> {
   try {
     const current = chainIdOf(await provider.request({ method: "eth_chainId" }));
     if (current === config.chain.id) {

@@ -1,2 +1,2 @@
-export * from "./scan.js";
-export * from "./worker.js";
+export * from "./scan";
+export * from "./worker";

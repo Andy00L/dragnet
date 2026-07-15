@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@dragnet/crypto": "workspace:*",
+    "@dragnet/scanner": "workspace:*",
     "@dragnet/sdk": "workspace:*",
     "next": "^16.2.10",
     "react": "^19.2.7",
