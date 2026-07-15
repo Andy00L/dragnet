@@ -124,6 +124,36 @@ contract DragnetMarketTest is Test {
         market.postBounty{value: PAYOUT + BOND}(LO, HI, 0, root2, PAYOUT, BOND, CLAIM_WINDOW, OPEN_WINDOW, "");
     }
 
+    function test_PostRevertsOnZeroLo() public {
+        // lo == 0 would let a canary be key 0, whose derived address is address(0).
+        vm.prank(buyer);
+        vm.expectRevert(DragnetMarket.RangeInvalid.selector);
+        market.postBounty{value: PAYOUT + BOND}(0, HI, 2, root2, PAYOUT, BOND, CLAIM_WINDOW, OPEN_WINDOW, "");
+    }
+
+    function test_PostRevertsWhenHiAtOrAboveGroupOrder() public {
+        // hi >= N admits keys that are not valid private keys.
+        vm.prank(buyer);
+        vm.expectRevert(DragnetMarket.RangeInvalid.selector);
+        market.postBounty{value: PAYOUT + BOND}(1, Secp256k1.N, 2, root2, PAYOUT, BOND, CLAIM_WINDOW, OPEN_WINDOW, "");
+    }
+
+    function test_PostAcceptsHiAtGroupOrderMinusOne() public {
+        // The largest valid range end is N - 1.
+        vm.prank(buyer);
+        uint256 id = market.postBounty{value: PAYOUT + BOND}(
+            1, Secp256k1.N - 1, 2, root2, PAYOUT, BOND, CLAIM_WINDOW, OPEN_WINDOW, ""
+        );
+        assertEq(uint8(market.getBounty(id).status), uint8(DragnetMarket.Status.Open));
+    }
+
+    function test_PostRevertsWhenRangeTooSmallForCount() public {
+        // [1, 3] holds 3 integers but m = 5 asks for 5 distinct keys.
+        vm.prank(buyer);
+        vm.expectRevert(DragnetMarket.RangeTooSmall.selector);
+        market.postBounty{value: PAYOUT + BOND}(1, 3, 5, root2, PAYOUT, BOND, CLAIM_WINDOW, OPEN_WINDOW, "");
+    }
+
     // --- happy path ---
 
     function test_HonestWorkerProvesCoverageAndIsPaid() public {
@@ -193,6 +223,34 @@ contract DragnetMarketTest is Test {
         py[0] = GY;
         py[1] = 67890;
         (,, , bytes32[][] memory proofs) = _twoKeyReveal();
+
+        vm.prank(workerB);
+        market.commit(id, _commitHash(keys, workerB));
+        vm.roll(block.number + 1);
+
+        vm.prank(workerB);
+        vm.expectRevert(DragnetMarket.BadPublicKey.selector);
+        market.reveal(id, keys, px, py, proofs, SALT);
+
+        assertEq(market.pendingWithdrawals(workerB), 0);
+    }
+
+    function test_CheatWithValidPointForWrongKeyEarnsZero() public {
+        uint256 id = _postTwoCanaryBounty();
+
+        // The second point is G (a real on-curve point) but paired with key 2, so it
+        // is not key 2's public key. This exercises the isPubKeyOf binding rather
+        // than the off-curve check that test_CheatPaddingWithFakeKeyEarnsZero hits.
+        uint256[] memory keys = new uint256[](2);
+        keys[0] = 1;
+        keys[1] = 2;
+        uint256[] memory px = new uint256[](2);
+        px[0] = GX;
+        px[1] = GX; // 1*G, not 2*G
+        uint256[] memory py = new uint256[](2);
+        py[0] = GY;
+        py[1] = GY;
+        (,,, bytes32[][] memory proofs) = _twoKeyReveal();
 
         vm.prank(workerB);
         market.commit(id, _commitHash(keys, workerB));
@@ -371,5 +429,57 @@ contract DragnetMarketTest is Test {
         vm.prank(workerA);
         vm.expectRevert(DragnetMarket.NothingToWithdraw.selector);
         market.withdraw();
+    }
+
+    // --- escrow conservation across every terminal state ---
+
+    /// @dev The contract's balance must always equal the escrow still held by Open
+    ///      bounties plus everything credited but not yet withdrawn. This drives one
+    ///      bounty through each terminal path (reveal, open, slash) and checks that
+    ///      no wei is created or destroyed, then that withdrawals drain it to zero.
+    function test_EscrowIsConservedThroughRevealOpenAndSlash() public {
+        (uint256[] memory keys, uint256[] memory px, uint256[] memory py, bytes32[][] memory proofs) =
+            _twoKeyReveal();
+
+        uint256 paidBounty = _postTwoCanaryBounty();
+        uint256 openedBounty = _postTwoCanaryBounty();
+        uint256 slashedBounty = _postTwoCanaryBounty();
+
+        uint256 totalEscrow = 3 * (PAYOUT + BOND);
+        // Nothing settled yet: the whole balance is Open-bounty escrow.
+        assertEq(address(market).balance, totalEscrow);
+        assertEq(market.pendingWithdrawals(buyer), 0);
+
+        // Path 1: an honest worker reveals within the claim window.
+        vm.prank(workerA);
+        market.commit(paidBounty, _commitHash(keys, workerA));
+        // Path 3 precondition: the slasher must commit before the claim deadline.
+        vm.prank(workerB);
+        market.commit(slashedBounty, _commitHash(keys, workerB));
+        vm.roll(block.number + 1);
+        vm.prank(workerA);
+        market.reveal(paidBounty, keys, px, py, proofs, SALT);
+
+        // Path 2 and 3 happen after both windows elapse.
+        vm.warp(block.timestamp + CLAIM_WINDOW + OPEN_WINDOW + 1);
+        vm.prank(buyer);
+        market.openBounty(openedBounty, keys, px, py, proofs);
+        vm.prank(workerB);
+        market.slash(slashedBounty);
+
+        // Every bounty is now terminal, so the balance is entirely credited funds.
+        uint256 totalCredited = market.pendingWithdrawals(workerA)
+            + market.pendingWithdrawals(workerB) + market.pendingWithdrawals(buyer);
+        assertEq(totalCredited, totalEscrow);
+        assertEq(address(market).balance, totalCredited);
+
+        // Withdrawals drain the contract to exactly zero.
+        vm.prank(workerA);
+        market.withdraw();
+        vm.prank(workerB);
+        market.withdraw();
+        vm.prank(buyer);
+        market.withdraw();
+        assertEq(address(market).balance, 0);
     }
 }

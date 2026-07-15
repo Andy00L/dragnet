@@ -653,6 +653,11 @@ export const dragnetMarketAbi = [
   },
   {
     "type": "error",
+    "name": "RangeTooSmall",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "Reentrancy",
     "inputs": []
   },

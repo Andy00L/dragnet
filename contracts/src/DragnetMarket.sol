@@ -90,6 +90,7 @@ contract DragnetMarket {
     event Withdrawn(address indexed account, uint256 amount);
 
     error RangeInvalid();
+    error RangeTooSmall();
     error CountInvalid();
     error RootZero();
     error PayoutZero();
@@ -138,8 +139,14 @@ contract DragnetMarket {
         uint64 openWindow,
         bytes calldata targetList
     ) external payable returns (uint256 bountyId) {
-        if (hi <= lo) revert RangeInvalid();
+        // Valid private keys live in [1, N-1]; a range outside that can never be
+        // proven, since deriveAddress rejects keys of 0 or >= N. sourceRef:
+        // Secp256k1.sol deriveAddress bounds.
+        if (lo == 0 || hi <= lo || hi >= Secp256k1.N) revert RangeInvalid();
         if (m == 0 || m > MAX_M) revert CountInvalid();
+        // m distinct strictly-ascending keys must fit inside [lo, hi]. The bounds
+        // above make hi - lo + 1 safe from overflow. sourceRef: _verifyKeys.
+        if (hi - lo + 1 < m) revert RangeTooSmall();
         if (targetRoot == bytes32(0)) revert RootZero();
         if (payout == 0) revert PayoutZero();
         if (bond == 0) revert BondZero();
@@ -234,6 +241,11 @@ contract DragnetMarket {
     ///         findable. On success the buyer reclaims payout + bond. Callable while
     ///         the bounty is still Open (even past openDeadline, as long as no
     ///         committer has slashed it), so an honest buyer with no worker is safe.
+    /// @dev    Availability assumption: after openDeadline both this function and
+    ///         `slash` are callable, so whichever transaction lands first wins. A
+    ///         buyer that plants findable canaries but goes offline past the open
+    ///         window can be slashed by a committer. The system assumes the buyer
+    ///         stays available to open unclaimed bounties within the open window.
     function openBounty(
         uint256 bountyId,
         uint256[] calldata keys,
@@ -265,6 +277,11 @@ contract DragnetMarket {
     /// @notice If the buyer never opens by openDeadline, a worker that committed
     ///         (proving it scanned) takes payout + bond. This is what deters a buyer
     ///         from planting unfindable, out-of-range canaries to get free scanning.
+    /// @dev    A commit carries no proof of work, so this is a liveness race with
+    ///         the buyer's `openBounty` after openDeadline (see openBounty dev note),
+    ///         not a proof the canaries were unfindable. The honest buyer defends by
+    ///         opening in time; a rational worker with full coverage reveals during
+    ///         the claim window for the guaranteed payout rather than gambling here.
     function slash(uint256 bountyId) external nonReentrant {
         Bounty storage bounty = bounties[bountyId];
         if (bounty.status == Status.None) revert UnknownBounty();

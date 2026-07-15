@@ -11,6 +11,10 @@ pragma solidity 0.8.28;
 ///         left/right flags. Leaves must be hashed by the caller (see
 ///         DragnetMarket, which uses keccak256 of the 20-byte hash160).
 library MerkleProof {
+    /// @dev Second-preimage safety: callers pass a leaf that is keccak256 of a
+    ///      20-byte hash160, while every internal node here is keccak256 of 64
+    ///      bytes. The differing preimage lengths mean an internal node can never be
+    ///      replayed as a leaf. Keep that separation if the leaf encoding changes.
     function verify(bytes32[] calldata proof, bytes32 root, bytes32 leaf)
         internal
         pure
