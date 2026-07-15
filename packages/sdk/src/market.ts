@@ -9,6 +9,7 @@ import {
   createPublicClient,
   createWalletClient,
   http,
+  parseEventLogs,
 } from "viem";
 import { type Result, type RevealPayload, bytesToAddresses, err, ok } from "@dragnet/crypto";
 import { dragnetMarketAbi } from "./abi.js";
@@ -175,8 +176,21 @@ export class MarketClient {
         value: params.payout + params.bond,
       });
       const txHash = await wallet.writeContract(request);
-      await this.publicClient.waitForTransactionReceipt({ hash: txHash });
-      return { bountyId: result, txHash };
+      const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      // The authoritative id is the one the contract assigned, read from the
+      // BountyPosted event. The simulated `result` reflects pre-send state and would
+      // be wrong if another postBounty is mined between simulate and send.
+      const marketLogs = receipt.logs.filter(
+        (entry) => entry.address.toLowerCase() === this.address.toLowerCase(),
+      );
+      const posted = parseEventLogs({
+        abi: dragnetMarketAbi,
+        eventName: "BountyPosted",
+        logs: marketLogs,
+      });
+      const emitted = posted[0];
+      const bountyId = emitted !== undefined ? emitted.args.bountyId : result;
+      return { bountyId, txHash };
     });
   }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { type Hex, toHex } from "viem";
+import { type Address, type Hex, toHex } from "viem";
 import { MarketClient, loadConfig } from "@dragnet/sdk";
 import { runWorker } from "./worker.js";
 
@@ -54,13 +54,9 @@ function parseArgs(argv: string[]): { ok: true; value: ParsedArgs } | { ok: fals
   return { ok: true, value: { bountyId, skipFraction, salt: salt ?? randomSalt() } };
 }
 
-async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
-  if (!args.ok) {
-    console.error(`[dragnet-scan] ${args.error}`);
-    process.exit(2);
-  }
-
+/// Load config and build a signing client, or exit with a distinct message. Shared
+/// by the scan and slash flows since both need a funded worker key.
+function marketWithSigner(): { market: MarketClient; workerAddress: Address } {
   const config = loadConfig();
   if (!config.ok) {
     console.error(`[dragnet-scan] configuration error: ${config.error}`);
@@ -70,9 +66,52 @@ async function main(): Promise<void> {
     console.error("[dragnet-scan] set PRIVATE_KEY to a worker key");
     process.exit(2);
   }
+  return { market: MarketClient.fromConfig(config.value), workerAddress: config.value.account.address };
+}
 
-  const market = MarketClient.fromConfig(config.value);
-  const outcome = await runWorker(market, config.value.account.address, {
+/// After openDeadline, a worker that committed can take payout + bond from a buyer
+/// who never opened (for example one that planted unfindable canaries). This is the
+/// client half of that deterrent; the contract enforces the committer and deadline
+/// gates. On success the credited funds are withdrawn to the worker's wallet.
+async function runSlash(argv: string[]): Promise<void> {
+  const idText = argv[0];
+  if (idText === undefined) {
+    console.error("[dragnet-scan] usage: dragnet-scan slash <bountyId>");
+    process.exit(2);
+  }
+  let bountyId: bigint;
+  try {
+    bountyId = BigInt(idText);
+  } catch {
+    console.error(`[dragnet-scan] bountyId must be an integer, got "${idText}"`);
+    process.exit(2);
+  }
+
+  const { market } = marketWithSigner();
+  const slashed = await market.slash(bountyId);
+  if (!slashed.ok) {
+    console.error(`[dragnet-scan] slash failed: ${slashed.error}`);
+    process.exit(1);
+  }
+  console.log(`[dragnet-scan] slashed bounty ${bountyId} (tx ${slashed.value}); payout + bond credited`);
+
+  const withdrawn = await market.withdraw();
+  if (withdrawn.ok) {
+    console.log(`[dragnet-scan] withdrew credited funds to wallet (tx ${withdrawn.value})`);
+  } else {
+    console.log(`[dragnet-scan] funds credited; withdraw separately (${withdrawn.error})`);
+  }
+}
+
+async function runScan(argv: string[]): Promise<void> {
+  const args = parseArgs(argv);
+  if (!args.ok) {
+    console.error(`[dragnet-scan] ${args.error}`);
+    process.exit(2);
+  }
+
+  const { market, workerAddress } = marketWithSigner();
+  const outcome = await runWorker(market, workerAddress, {
     bountyId: args.value.bountyId,
     salt: args.value.salt,
     skipFraction: args.value.skipFraction,
@@ -84,6 +123,15 @@ async function main(): Promise<void> {
       (outcome.revertReason !== undefined ? `, reason=${outcome.revertReason}` : ""),
   );
   process.exit(outcome.paid || outcome.revealed ? 0 : 1);
+}
+
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  if (argv[0] === "slash") {
+    await runSlash(argv.slice(1));
+    return;
+  }
+  await runScan(argv);
 }
 
 void main();

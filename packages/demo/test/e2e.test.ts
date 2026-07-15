@@ -143,6 +143,7 @@ describe("Dragnet end to end on a live contract", () => {
         bountyId,
         salt: SALT_CHEAT,
         scanTo: maxCanary - 1n,
+        revealEvenIfShort: true, // force the doomed reveal so the on-chain revert is asserted
         log: () => {},
       });
 
@@ -196,6 +197,65 @@ describe("Dragnet end to end on a live contract", () => {
 
       const pendingAfter = await buyerMarket.pendingWithdrawals(buyerAddress);
       expect(pendingAfter - pendingBefore).toBe(PAYOUT + BOND);
+    },
+    60_000,
+  );
+
+  test(
+    "a committer slashes a buyer who never opens and collects payout plus bond",
+    async () => {
+      const buyerMarket = marketFor(KEY_BUYER);
+      const posted = await buyerPost(buyerMarket, {
+        lo: LO,
+        hi: HI,
+        m: M,
+        payout: PAYOUT,
+        bond: BOND,
+        claimWindow: 3600n,
+        openWindow: 3600n,
+        rng: seededRandomBytes(404),
+      });
+      expect(posted.ok).toBe(true);
+      if (!posted.ok) return;
+      const bountyId = posted.value.bountyId;
+
+      // A worker scans short of the top canary, so it commits (proving it scanned)
+      // but does not send the doomed reveal: the bounty stays Open with a committer
+      // on record. This is also the TA6 case (found < m sends no reveal).
+      const maxCanary = posted.value.canaryKeys.reduce(
+        (highest, key) => (key > highest ? key : highest),
+        0n,
+      );
+      const cheatMarket = marketFor(KEY_CHEAT);
+      const outcome = await runWorker(cheatMarket, cheatAddress, {
+        bountyId,
+        salt: SALT_CHEAT,
+        scanTo: maxCanary - 1n,
+        log: () => {},
+      });
+      expect(outcome.committed).toBe(true);
+      expect(outcome.revealed).toBe(false);
+      expect(outcome.revertReason).toBeUndefined();
+
+      // Jump past the claim and open windows so slash is allowed.
+      const testClient = createTestClient({
+        chain: anvilLocal,
+        transport: http(anvil.rpcUrl),
+        mode: "anvil",
+      });
+      await testClient.increaseTime({ seconds: 7300 });
+      await testClient.mine({ blocks: 1 });
+
+      const cheatPendingBefore = await cheatMarket.pendingWithdrawals(cheatAddress);
+      const slashed = await cheatMarket.slash(bountyId);
+      expect(slashed.ok).toBe(true);
+
+      const bounty = await cheatMarket.getBounty(bountyId);
+      expect(bounty.status).toBe(BountyStatus.Slashed);
+      expect(bounty.winner.toLowerCase()).toBe(cheatAddress.toLowerCase());
+
+      const cheatPendingAfter = await cheatMarket.pendingWithdrawals(cheatAddress);
+      expect(cheatPendingAfter - cheatPendingBefore).toBe(PAYOUT + BOND);
     },
     60_000,
   );

@@ -80,6 +80,7 @@ export async function runDemo(): Promise<void> {
       bountyId,
       salt: `0x${"c0".repeat(32)}`,
       scanTo: maxCanary - 1n, // provably stops before the highest canary
+      revealEvenIfShort: true, // send the doomed reveal so the on-chain rejection shows
       log: (message) => console.log(`   ${message}`),
     });
 
