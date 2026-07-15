@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Hex, isHex, parseEther } from "viem";
 import { MarketClient, loadConfig } from "@dragnet/sdk";
@@ -47,23 +47,48 @@ function requireFlag(flags: Map<string, string>, name: string): string {
 }
 
 function saveSecret(record: SavedBounty): string {
-  mkdirSync(SECRETS_DIR, { recursive: true });
+  // Canary private keys stay secret until the buyer opens, so create the directory
+  // and file owner-only; other local users on a shared host must not read them.
+  mkdirSync(SECRETS_DIR, { recursive: true, mode: 0o700 });
   const path = join(SECRETS_DIR, `bounty-${record.bountyId}.json`);
-  writeFileSync(path, JSON.stringify(record, null, 2));
+  writeFileSync(path, JSON.stringify(record, null, 2), { mode: 0o600 });
+  // writeFileSync applies mode only when creating; enforce it if the file existed.
+  chmodSync(path, 0o600);
   return path;
 }
 
 function loadSecret(bountyId: string): SavedBounty {
   const path = join(SECRETS_DIR, `bounty-${bountyId}.json`);
-  const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    !("canaryKeys" in parsed) ||
-    !Array.isArray((parsed as { canaryKeys: unknown }).canaryKeys)
-  ) {
-    console.error(`[dragnet-buyer] ${path} is not a valid saved bounty`);
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    console.error(`[dragnet-buyer] cannot read saved bounty at ${path}`);
     process.exit(1);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.error(`[dragnet-buyer] ${path} is not valid JSON`);
+    process.exit(1);
+  }
+  if (typeof parsed !== "object" || parsed === null || !("canaryKeys" in parsed)) {
+    console.error(`[dragnet-buyer] ${path} is missing canaryKeys`);
+    process.exit(1);
+  }
+  const canaryKeys: unknown = (parsed as { canaryKeys: unknown }).canaryKeys;
+  if (!Array.isArray(canaryKeys) || canaryKeys.length === 0) {
+    console.error(`[dragnet-buyer] ${path} has no canary keys`);
+    process.exit(1);
+  }
+  // Every key must be a base-10 digit string so the later BigInt conversion in
+  // runOpen cannot throw on a corrupted or hand-edited file.
+  for (const key of canaryKeys) {
+    if (typeof key !== "string" || !/^\d+$/.test(key)) {
+      console.error(`[dragnet-buyer] ${path} has a malformed canaryKeys entry`);
+      process.exit(1);
+    }
   }
   return parsed as SavedBounty;
 }
