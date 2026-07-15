@@ -42,16 +42,19 @@ export interface RunOutcome {
   revertReason?: string;
 }
 
+// Retry budget so an incidental rate-limit (Monad testnet caps requests) recovers.
+const readTransport = (rpcUrl: string) => http(rpcUrl, { retryCount: 6, retryDelay: 300 });
+
 function readClient(config: ClientMarketConfig): MarketClient {
-  const publicClient = createPublicClient({ chain: config.chain, transport: http(config.rpcUrl) });
-  return new MarketClient(config.marketAddress, publicClient);
+  const publicClient = createPublicClient({ chain: config.chain, transport: readTransport(config.rpcUrl) });
+  return new MarketClient(config.marketAddress, publicClient, undefined, undefined, config.deployBlock);
 }
 
 function writeClient(provider: Eip1193Provider, worker: Address, config: ClientMarketConfig): MarketClient {
   const account: Account = { address: worker, type: "json-rpc" };
-  const publicClient = createPublicClient({ chain: config.chain, transport: http(config.rpcUrl) });
+  const publicClient = createPublicClient({ chain: config.chain, transport: readTransport(config.rpcUrl) });
   const walletClient = createWalletClient({ chain: config.chain, transport: custom(provider), account });
-  return new MarketClient(config.marketAddress, publicClient, walletClient, account);
+  return new MarketClient(config.marketAddress, publicClient, walletClient, account, config.deployBlock);
 }
 
 // Yield to the browser between slices so the net animation and input stay live.

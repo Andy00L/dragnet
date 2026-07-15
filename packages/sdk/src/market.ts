@@ -2,6 +2,7 @@ import {
   type Account,
   type Address,
   type Hex,
+  type Log,
   type PublicClient,
   type WalletClient,
   BaseError,
@@ -49,34 +50,66 @@ export interface PostBountyParams {
   targetList: Hex;
 }
 
+/// One worker-facing event for a bounty, flattened from the Committed, Paid, and
+/// Slashed streams. `amount` is the payout (paid), the forfeited bond (slashed), or
+/// zero (committed). Sorted by block then log index by fetchFieldEvents.
+export interface WorkerEvent {
+  kind: "committed" | "paid" | "slashed";
+  worker: Address;
+  amount: bigint;
+  block: bigint;
+  logIndex: number;
+}
+
 /// Typed viem wrapper over DragnetMarket. Read methods return values; write
 /// methods simulate first (so a revert surfaces its distinct custom error), then
 /// send and wait for the receipt.
+// eth_getLogs block-range cap on public RPCs (Monad testnet rejects wider spans
+// with error -32614 "eth_getLogs is limited to a 100 range"). Event scans page in
+// windows this wide. sourceRef: Monad testnet JSON-RPC (eth_getLogs).
+const LOG_WINDOW = 100n;
+
+// Pause between successive paged getLogs calls. Monad testnet caps requests at
+// 25/sec (error -32005); one request per window plus this gap keeps a multi-window
+// field-log scan comfortably under that. sourceRef: Monad testnet JSON-RPC.
+const LOG_THROTTLE_MS = 45;
+
 export class MarketClient {
   private readonly publicClient: PublicClient;
   private readonly walletClient: WalletClient | undefined;
   private readonly account: Account | undefined;
   private readonly address: Address;
+  private readonly deployBlock: bigint;
 
   constructor(
     address: Address,
     publicClient: PublicClient,
     walletClient?: WalletClient,
     account?: Account,
+    deployBlock: bigint = 0n,
   ) {
     this.address = address;
     this.publicClient = publicClient;
     this.walletClient = walletClient;
     this.account = account;
+    this.deployBlock = deployBlock;
   }
 
   static fromConfig(config: DragnetConfig): MarketClient {
-    const transport = http(config.rpcUrl);
+    // Retry budget so an incidental rate-limit (Monad testnet caps requests) backs
+    // off and recovers instead of surfacing as a hard failure.
+    const transport = http(config.rpcUrl, { retryCount: 6, retryDelay: 300 });
     const publicClient = createPublicClient({ chain: config.chain, transport });
     const walletClient = config.account
       ? createWalletClient({ chain: config.chain, transport, account: config.account })
       : undefined;
-    return new MarketClient(config.marketAddress, publicClient, walletClient, config.account);
+    return new MarketClient(
+      config.marketAddress,
+      publicClient,
+      walletClient,
+      config.account,
+      config.deployBlock,
+    );
   }
 
   private base() {
@@ -141,19 +174,90 @@ export class MarketClient {
     }
   }
 
+  /// Find the newest match for a paged query, scanning [deployBlock, head] backward
+  /// in windows so a recent event resolves in the first request. Used for one-off
+  /// lookups (the target list, posted once per bounty).
+  private async findLatestPaged<TLog>(
+    query: (fromBlock: bigint, toBlock: bigint) => Promise<TLog[]>,
+  ): Promise<TLog | undefined> {
+    const head = await this.publicClient.getBlockNumber();
+    let toBlock = head;
+    while (toBlock >= this.deployBlock) {
+      const fromBlock =
+        toBlock - LOG_WINDOW + 1n < this.deployBlock ? this.deployBlock : toBlock - LOG_WINDOW + 1n;
+      const logs = await query(fromBlock, toBlock);
+      const last = logs[logs.length - 1];
+      if (last !== undefined) {
+        return last;
+      }
+      if (fromBlock <= this.deployBlock) {
+        break;
+      }
+      toBlock = fromBlock - 1n;
+    }
+    return undefined;
+  }
+
   /// Fetch the published target list (hash160 addresses) from the BountyPosted event.
   async fetchTargetList(bountyId: bigint): Promise<Result<Hex[]>> {
-    const logs = await this.publicClient.getContractEvents({
-      ...this.base(),
-      eventName: "BountyPosted",
-      args: { bountyId },
-      fromBlock: "earliest",
-    });
-    const first = logs[0];
-    if (first === undefined || first.args.targetList === undefined) {
+    const found = await this.findLatestPaged((fromBlock, toBlock) =>
+      this.publicClient.getContractEvents({
+        ...this.base(),
+        eventName: "BountyPosted",
+        args: { bountyId },
+        fromBlock,
+        toBlock,
+      }),
+    );
+    if (found === undefined || found.args.targetList === undefined) {
       return err(`no BountyPosted event found for bounty ${bountyId}`);
     }
-    return bytesToAddresses(first.args.targetList);
+    return bytesToAddresses(found.args.targetList);
+  }
+
+  /// Fetch and flatten the Committed, Paid, and Slashed events for a bounty into a
+  /// single chronologically sorted list (the field log source). One getLogs per
+  /// window (sequential, throttled) keeps the scan under the RPC's request-rate cap;
+  /// the raw logs are decoded locally, so extra event types cost no requests.
+  async fetchFieldEvents(bountyId: bigint): Promise<WorkerEvent[]> {
+    const head = await this.publicClient.getBlockNumber();
+    const rawLogs: Log[] = [];
+    let fromBlock = this.deployBlock;
+    while (fromBlock <= head) {
+      const toBlock = fromBlock + LOG_WINDOW - 1n > head ? head : fromBlock + LOG_WINDOW - 1n;
+      const logs = await this.publicClient.getLogs({ address: this.address, fromBlock, toBlock });
+      for (const log of logs) {
+        rawLogs.push(log);
+      }
+      fromBlock = toBlock + 1n;
+      if (fromBlock <= head) {
+        await new Promise((resolve) => setTimeout(resolve, LOG_THROTTLE_MS));
+      }
+    }
+
+    const events: WorkerEvent[] = [];
+    for (const log of parseEventLogs({ abi: dragnetMarketAbi, eventName: "Committed", logs: rawLogs })) {
+      if (log.args.bountyId !== bountyId || log.blockNumber === null || log.logIndex === null) {
+        continue;
+      }
+      events.push({ kind: "committed", worker: log.args.worker, amount: 0n, block: log.blockNumber, logIndex: log.logIndex });
+    }
+    for (const log of parseEventLogs({ abi: dragnetMarketAbi, eventName: "Paid", logs: rawLogs })) {
+      if (log.args.bountyId !== bountyId || log.blockNumber === null || log.logIndex === null) {
+        continue;
+      }
+      events.push({ kind: "paid", worker: log.args.worker, amount: log.args.payout, block: log.blockNumber, logIndex: log.logIndex });
+    }
+    for (const log of parseEventLogs({ abi: dragnetMarketAbi, eventName: "Slashed", logs: rawLogs })) {
+      if (log.args.bountyId !== bountyId || log.blockNumber === null || log.logIndex === null) {
+        continue;
+      }
+      events.push({ kind: "slashed", worker: log.args.committer, amount: log.args.amount, block: log.blockNumber, logIndex: log.logIndex });
+    }
+    events.sort((left, right) =>
+      left.block !== right.block ? (left.block < right.block ? -1 : 1) : left.logIndex - right.logIndex,
+    );
+    return events;
   }
 
   async postBounty(params: PostBountyParams): Promise<Result<{ bountyId: bigint; txHash: Hex }>> {

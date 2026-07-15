@@ -11,6 +11,21 @@ export interface ClientMarketConfig {
   marketAddress: Address;
   chain: Chain;
   rpcUrl: string;
+  // Floor for event pagination; public RPCs cap eth_getLogs to a 100-block range.
+  deployBlock: bigint;
+}
+
+function parseDeployBlock(): bigint {
+  const raw = process.env.NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK;
+  if (raw === undefined || raw.length === 0) {
+    return 0n;
+  }
+  try {
+    const parsed = BigInt(raw);
+    return parsed < 0n ? 0n : parsed;
+  } catch {
+    return 0n;
+  }
 }
 
 export function clientMarketConfig(): ClientMarketConfig | null {
@@ -24,5 +39,5 @@ export function clientMarketConfig(): ClientMarketConfig | null {
   const chain = chainForKey(chainKey);
   const rpcUrl =
     process.env.NEXT_PUBLIC_DRAGNET_RPC_URL ?? chain.rpcUrls.default.http[0] ?? "";
-  return { marketAddress: address, chain, rpcUrl };
+  return { marketAddress: address, chain, rpcUrl, deployBlock: parseDeployBlock() };
 }

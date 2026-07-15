@@ -8,7 +8,6 @@ import { formatBound, groupDigits } from "@/lib/format";
 import type { BountyDetail, DataSource } from "@/lib/records";
 
 const MARK_FRACS = [0.13, 0.3, 0.46, 0.72, 0.88];
-const RINGED_WORDS = ["None", "One", "Two", "Three", "Four", "All five"];
 const TRACK_X = 12;
 const TRACK_W = 616;
 
@@ -70,8 +69,10 @@ export function BountyDetailScreen({ detail, source }: { detail: BountyDetail; s
       }),
     [cov],
   );
-  const ringedCount = marks.filter((mark) => mark.ringed).length;
-  const ringedWord = RINGED_WORDS[Math.min(ringedCount, RINGED_WORDS.length - 1)];
+  // The net's marks are a fixed stylised motif; the caption counts the real
+  // canaries returned (from the on-chain k/m), so it stays correct for any m.
+  const returnedCount = Number.parseInt(detail.bestReturn.split("/")[0] ?? "0", 10) || 0;
+  const ringedPhrase = returnedCount === 0 ? "None" : returnedCount >= detail.m ? "All" : String(returnedCount);
   const washW = Math.round(TRACK_W * cov * 10) / 10;
   const frontierX = Math.round((TRACK_X + TRACK_W * cov) * 10) / 10;
   const spanLabel = formatBound(detail.hi - detail.lo + 1n);
@@ -165,7 +166,7 @@ export function BountyDetailScreen({ detail, source }: { detail: BountyDetail; s
                   <text x="628" y="140" textAnchor="end" fontFamily="ui-monospace, Menlo, monospace" fontSize="12" fill={palette.muted}>{hiLabel}</text>
                 </svg>
                 <p className="small muted" style={{ margin: "14px 0 0", textWrap: "pretty" }}>
-                  {ringedWord} of the {detail.m} canaries {ringedCount === 1 ? "is" : "are"} ringed and back in hand; the bare marks past the frontier lie in mesh no worker has dragged yet. Canary and ordinary key are stamped alike, only an exhaustive sweep finds them all.
+                  {ringedPhrase} of the {detail.m} canaries {returnedCount === 1 ? "is" : "are"} ringed and back in hand; the bare marks past the frontier lie in mesh no worker has dragged yet. Canary and ordinary key are stamped alike, only an exhaustive sweep finds them all.
                 </p>
                 <div className="mono small" style={{ display: "flex", gap: 28, flexWrap: "wrap", marginTop: 12, color: palette.ink }}>
                   <span>span {spanLabel} keys</span>
