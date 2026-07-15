@@ -1,5 +1,5 @@
 import { encodeAbiParameters, keccak256 } from "viem";
-import type { Hex } from "./types.js";
+import type { Hex } from "./types";
 
 /// Commit hash for the reveal, matching the contract's
 /// `keccak256(abi.encode(keys, worker, salt))`. Binding the worker address stops a

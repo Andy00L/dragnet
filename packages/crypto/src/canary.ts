@@ -1,7 +1,7 @@
 import { bytesToBigInt } from "viem";
-import { N, hash160ForKey } from "./secp256k1.js";
-import { type MerkleTree, treeForAddresses } from "./merkle.js";
-import { type Hex, type Result, err, ok } from "./types.js";
+import { N, hash160ForKey } from "./secp256k1";
+import { type MerkleTree, treeForAddresses } from "./merkle";
+import { type Hex, type Result, err, ok } from "./types";
 
 /// Injectable source of random bytes so tests can be deterministic. Defaults to
 /// the platform CSPRNG. Buyers MUST use the secure default in production: canary

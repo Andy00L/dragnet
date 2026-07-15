@@ -1,6 +1,6 @@
 import { secp256k1 } from "@noble/curves/secp256k1";
 import { ripemd160, sha256 } from "viem";
-import { type Hex, type Result, err, ok } from "./types.js";
+import { type Hex, type Result, err, ok } from "./types";
 
 /// Order of the secp256k1 base point. sourceRef: @noble/curves CURVE.n, equal to
 /// the SEC 2 v2 value used in contracts/src/Secp256k1.sol.

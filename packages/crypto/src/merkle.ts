@@ -1,5 +1,5 @@
 import { concat, keccak256 } from "viem";
-import { type Hex, type Result, err, ok } from "./types.js";
+import { type Hex, type Result, err, ok } from "./types";
 
 /// Sorted-pair keccak256 Merkle tree that matches contracts/src/MerkleProof.sol.
 /// A leaf for a 20-byte hash160 is keccak256(hash160), i.e. keccak256 of the raw

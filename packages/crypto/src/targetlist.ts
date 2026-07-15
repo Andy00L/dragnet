@@ -1,5 +1,5 @@
 import { bytesToHex, concat, hexToBytes } from "viem";
-import { type Hex, type Result, err, ok } from "./types.js";
+import { type Hex, type Result, err, ok } from "./types";
 
 const HASH160_BYTES = 20;
 

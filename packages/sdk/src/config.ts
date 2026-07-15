@@ -1,7 +1,7 @@
 import { type Address, type Chain, type PrivateKeyAccount, isAddress, isHex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { type Result, err, ok } from "@dragnet/crypto";
-import { type ChainKey, chainForKey } from "./chains.js";
+import { type ChainKey, chainForKey } from "./chains";
 
 export interface DragnetConfig {
   chainKey: ChainKey;

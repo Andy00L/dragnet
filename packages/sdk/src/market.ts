@@ -12,8 +12,8 @@ import {
   parseEventLogs,
 } from "viem";
 import { type Result, type RevealPayload, bytesToAddresses, err, ok } from "@dragnet/crypto";
-import { dragnetMarketAbi } from "./abi.js";
-import type { DragnetConfig } from "./config.js";
+import { dragnetMarketAbi } from "./abi";
+import type { DragnetConfig } from "./config";
 
 export enum BountyStatus {
   None = 0,

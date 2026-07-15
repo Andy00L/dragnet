@@ -1,6 +1,6 @@
-import { pointForKey, hash160ForKey } from "./secp256k1.js";
-import { proofForIndex, treeForAddresses } from "./merkle.js";
-import { type Hex, type Result, type RevealPayload, err, ok } from "./types.js";
+import { pointForKey, hash160ForKey } from "./secp256k1";
+import { proofForIndex, treeForAddresses } from "./merkle";
+import { type Hex, type Result, type RevealPayload, err, ok } from "./types";
 
 /// Build the reveal payload for a set of found keys against the published target
 /// list. Keys are sorted ascending (the contract requires strict ascending order,
