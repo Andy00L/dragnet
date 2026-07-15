@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "references": [
+    { "path": "../crypto" },
+    { "path": "../sdk" },
+    { "path": "../scanner" },
+    { "path": "../buyer" }
+  ]
+}

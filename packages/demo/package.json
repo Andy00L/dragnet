@@ -1,0 +1,21 @@
+{
+  "name": "@dragnet/demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "dragnet-demo": "src/cli.ts"
+  },
+  "scripts": {
+    "demo": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@dragnet/buyer": "workspace:*",
+    "@dragnet/crypto": "workspace:*",
+    "@dragnet/scanner": "workspace:*",
+    "@dragnet/sdk": "workspace:*",
+    "viem": "^2.21.0"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/crypto" },
+    { "path": "packages/sdk" },
+    { "path": "packages/scanner" },
+    { "path": "packages/buyer" },
+    { "path": "packages/demo" }
+  ]
+}

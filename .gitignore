@@ -1,0 +1,33 @@
+# Node / Bun
+node_modules/
+bun.lockb
+*.tsbuildinfo
+dist/
+.next/
+out/
+
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+!contracts/broadcast/**/dry-run/
+# Vendored via tarball (no git submodules); restored by scripts/setup-contracts.sh
+contracts/lib/
+
+# Env and secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# Generated design assets (Claude Design loop output)
+ui-design/
+
+# Scratch and throwaway
+.scratch/
+
+# OS / editor / Windows ADS artifacts
+.DS_Store
+*:Zone.Identifier
+
+# Buyer secrets (canary private keys) — never commit
+.dragnet/

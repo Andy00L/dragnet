@@ -1,0 +1,19 @@
+{
+  "name": "@dragnet/scanner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "dragnet-scan": "src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "@dragnet/crypto": "workspace:*",
+    "@dragnet/sdk": "workspace:*",
+    "@noble/curves": "^1.6.0",
+    "viem": "^2.21.0"
+  }
+}
