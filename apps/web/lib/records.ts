@@ -127,7 +127,7 @@ const SAMPLE_WORKERS_42: WorkerLogEntry[] = [
     sub: "return pending",
     subColor: palette.pending,
     covLabel: "5/5",
-    amount: "—",
+    amount: "-",
     amountColor: palette.faint,
   },
 ];

@@ -2,11 +2,27 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { isAddress } from "viem";
+import type { Hex } from "viem";
 import { N } from "@dragnet/crypto";
 import { TopRail } from "./TopRail";
 import { useWallet } from "./WalletProvider";
+import { clientMarketConfig } from "@/lib/client-config";
+import { canaryKeysFile, postOnChain, preparePost } from "@/lib/post-onchain";
 import { palette } from "@/lib/tokens";
-import { groupDigits } from "@/lib/format";
+import { groupDigits, truncateHex } from "@/lib/format";
+
+// A completed on-chain post: the assigned id, its tx, and the buyer's canary keys
+// held in memory only so they can be downloaded once. Null in demo mode.
+interface PostedResult {
+  bountyId: bigint;
+  txHash: Hex;
+  rangeLabel: string;
+  m: number;
+  targetRoot: Hex;
+  canaries: bigint[];
+  explorerUrl: string | null;
+}
 
 const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 const UNITS = ["minutes", "hours", "days"] as const;
@@ -59,6 +75,8 @@ export function PostBountyScreen() {
   const [attempted, setAttempted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [result, setResult] = useState<PostedResult | null>(null);
+  const [postError, setPostError] = useState<string | null>(null);
   const [totalDisplay, setTotalDisplay] = useState("7.000");
 
   const submitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -181,7 +199,10 @@ export function PostBountyScreen() {
 
   const markTouched = (key: string) => setTouched((current) => ({ ...current, [key]: true }));
 
-  const onSubmit = () => {
+  const windowSeconds = (value: string, unit: Unit): bigint =>
+    BigInt(Math.round(Number(value) * DAYS_PER[unit] * 86400));
+
+  const onSubmit = async () => {
     if (submitting) {
       return;
     }
@@ -189,16 +210,76 @@ export function PostBountyScreen() {
       setAttempted(true);
       return;
     }
+    setPostError(null);
+    const config = clientMarketConfig();
+    const provider = typeof window !== "undefined" ? window.ethereum : undefined;
+
+    // Demo path: no market configured (or no wallet) means we cannot escrow for
+    // real, so we show the recorded state without a chain write.
+    if (config === null || wallet.address === null || provider === undefined) {
+      setSubmitting(true);
+      submitTimer.current = setTimeout(() => {
+        setSubmitting(false);
+        setSubmitted(true);
+      }, 1400);
+      return;
+    }
+
+    // Real path: generate canaries, escrow from the injected wallet.
+    const parsedLo = parseBound(lo);
+    const parsedHi = parseBound(hi);
+    if (parsedLo === null || parsedHi === null || !isAddress(wallet.address)) {
+      setPostError("the range or wallet address is invalid");
+      return;
+    }
     setSubmitting(true);
-    submitTimer.current = setTimeout(() => {
+    const prepared = preparePost({
+      lo: parsedLo,
+      hi: parsedHi,
+      m,
+      payout,
+      bond,
+      claimWindowSeconds: windowSeconds(claimVal, claimUnit),
+      openWindowSeconds: windowSeconds(openVal, openUnit),
+    });
+    if (!prepared.ok) {
       setSubmitting(false);
-      setSubmitted(true);
-    }, 1400);
+      setPostError(prepared.error);
+      return;
+    }
+    const posted = await postOnChain(provider, wallet.address, config, prepared.value);
+    setSubmitting(false);
+    if (!posted.ok) {
+      setPostError(posted.error);
+      return;
+    }
+    const explorer = config.chain.blockExplorers?.default.url;
+    setResult({
+      bountyId: posted.value.bountyId,
+      txHash: posted.value.txHash,
+      rangeLabel: `[${groupDigits(parsedLo)}, ${groupDigits(parsedHi)}]`,
+      m,
+      targetRoot: prepared.value.targetRoot,
+      canaries: prepared.value.canaries,
+      explorerUrl: explorer !== undefined ? `${explorer}/tx/${posted.value.txHash}` : null,
+    });
+    setSubmitted(true);
   };
 
-  const loLabel = validRange && loValue !== null ? groupDigits(loValue) : "—";
-  const hiLabel = validRange && hiValue !== null ? groupDigits(hiValue) : "—";
-  const spanLabel = validRange ? groupDigits(span) : "—";
+  const downloadCanaries = (posted: PostedResult) => {
+    const contents = canaryKeysFile(posted.bountyId, posted.rangeLabel, posted.m, posted.targetRoot, posted.canaries);
+    const blob = new Blob([contents], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `dragnet-bounty-${posted.bountyId}-canaries.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const loLabel = validRange && loValue !== null ? groupDigits(loValue) : "-";
+  const hiLabel = validRange && hiValue !== null ? groupDigits(hiValue) : "-";
+  const spanLabel = validRange ? groupDigits(span) : "-";
   const splitLine = `payout ${(parseFloat(payout) || 0).toFixed(3)} + bond ${(parseFloat(bond) || 0).toFixed(3)}`;
 
   return (
@@ -211,13 +292,38 @@ export function PostBountyScreen() {
           <p className="lead">Hide canary keys in a range; a worker must bring them all back to be paid.</p>
         </div>
 
-        {submitted ? (
+        {submitted && result !== null ? (
+          <div style={{ marginTop: 26, animation: "settleY 320ms cubic-bezier(0.16,1,0.3,1) both" }}>
+            <div className="card" style={{ padding: "26px 28px" }}>
+              <p className="h2" style={{ color: palette.accent }}>Recorded as bounty no. {result.bountyId.toString()}</p>
+              <p className="lead" style={{ color: palette.muted }}>
+                {total.toFixed(3)} MON is held in escrow from {wallet.addressShort}. The canaries are hidden; the sweep is open to any worker.
+              </p>
+              <div className="mono small" style={{ color: palette.muted, marginTop: 10 }}>tx {truncateHex(result.txHash, 8, 6)}</div>
+              <div style={{ display: "flex", gap: 20, flexWrap: "wrap", marginTop: 14 }}>
+                <Link href={`/bounty/${result.bountyId.toString()}`} style={{ fontSize: 15, fontWeight: 500, padding: "10px 2px", minHeight: 44, display: "inline-block" }}>View the record</Link>
+                {result.explorerUrl !== null ? (
+                  <a href={result.explorerUrl} target="_blank" rel="noreferrer" style={{ fontSize: 15, fontWeight: 500, padding: "10px 2px", minHeight: 44, display: "inline-block" }}>View the transaction</a>
+                ) : null}
+              </div>
+            </div>
+            {/* The buyer's canary keys are the whole security assumption: they are held
+                in memory only, never sent anywhere, and must be saved locally now. */}
+            <div className="card" style={{ padding: "22px 24px", marginTop: 16, borderColor: palette.pending }}>
+              <p style={{ fontSize: 15, lineHeight: 1.55, fontWeight: 600, color: palette.pending, margin: 0 }}>Save your canary keys now</p>
+              <p className="small muted" style={{ margin: "6px 0 0", textWrap: "pretty" }}>
+                These {result.m} private keys prove your bounty and are needed to refund it after it expires. They were generated in your browser, are shown to no one, and are not stored anywhere. Download and keep them safe; they cannot be recovered.
+              </p>
+              <button type="button" className="btn-primary" style={{ marginTop: 14 }} onClick={() => downloadCanaries(result)}>Download canary keys</button>
+            </div>
+          </div>
+        ) : submitted ? (
           <div className="card" style={{ marginTop: 26, padding: "26px 28px", animation: "settleY 320ms cubic-bezier(0.16,1,0.3,1) both" }}>
-            <p className="h2" style={{ color: palette.accent }}>Recorded as bounty no. 43</p>
+            <p className="h2" style={{ color: palette.accent }}>Recorded</p>
             <p className="lead" style={{ color: palette.muted }}>
-              {total.toFixed(3)} MON is held in escrow{wallet.address !== null ? ` from ${wallet.addressShort}` : ""}. The canaries are hidden; the sweep is open to any worker.
+              {total.toFixed(3)} MON would be held in escrow{wallet.address !== null ? ` from ${wallet.addressShort}` : ""}. This is a demo record; set a market address and connect a wallet to escrow on chain.
             </p>
-            <Link href="/bounty/43" style={{ display: "inline-block", fontSize: 15, fontWeight: 500, marginTop: 12, padding: "10px 2px", minHeight: 44 }}>View the record</Link>
+            <Link href="/" style={{ display: "inline-block", fontSize: 15, fontWeight: 500, marginTop: 12, padding: "10px 2px", minHeight: 44 }}>Back to the ledger</Link>
           </div>
         ) : (
           <>
@@ -331,6 +437,13 @@ export function PostBountyScreen() {
               </div>
             ) : null}
 
+            {postError !== null ? (
+              <div role="alert" className="error-card" style={{ marginTop: 28, padding: "16px 20px" }}>
+                <p style={{ fontSize: 15, lineHeight: 1.55, fontWeight: 600, color: palette.error, margin: 0 }}>The escrow did not go through</p>
+                <p className="small" style={{ color: palette.ink, margin: "6px 0 0" }}>{postError}</p>
+              </div>
+            ) : null}
+
             <div className="card" style={{ marginTop: 28, padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
               <span aria-live="polite" className="mono small" style={{ color: palette.ink }}>total {totalDisplay} MON</span>
               {wallet.address === null ? (
@@ -338,7 +451,7 @@ export function PostBountyScreen() {
                   {wallet.connecting ? "Connecting…" : "Connect wallet"}
                 </button>
               ) : (
-                <button type="button" className="btn-primary" onClick={onSubmit} disabled={submitting}>
+                <button type="button" className="btn-primary" onClick={() => void onSubmit()} disabled={submitting}>
                   {submitting ? "Escrowing…" : `Post and escrow ${total.toFixed(3)} MON`}
                 </button>
               )}
