@@ -80,21 +80,86 @@ function chainIdOf(value: unknown): number | null {
   return null;
 }
 
-// Make sure the injected wallet is on the configured chain, requesting a switch if not.
-export async function ensureChain(provider: Eip1193Provider, config: ClientMarketConfig): Promise<Result<true>> {
+// EIP-1193 provider errors carry a numeric code (sourceRef: EIP-1193 ProviderRpcError).
+// 4001: the user rejected the request. 4902: the requested chain has not been added to
+// the wallet (sourceRef: MetaMask wallet_switchEthereumChain docs).
+const USER_REJECTED_CODE = 4001;
+const UNRECOGNIZED_CHAIN_CODE = 4902;
+
+function providerErrorCode(caught: unknown): number | null {
+  if (typeof caught === "object" && caught !== null && "code" in caught) {
+    return typeof caught.code === "number" ? caught.code : null;
+  }
+  return null;
+}
+
+async function readWalletChainId(provider: Eip1193Provider): Promise<number | null> {
   try {
-    const current = chainIdOf(await provider.request({ method: "eth_chainId" }));
-    if (current === config.chain.id) {
-      return ok(true);
-    }
+    return chainIdOf(await provider.request({ method: "eth_chainId" }));
+  } catch {
+    return null;
+  }
+}
+
+// Poll cadence and budget for the wallet to report the target chain after a switch or
+// add request resolves. Some providers resolve wallet_switchEthereumChain before the
+// switch has propagated, or without performing it at all, so the request resolving is
+// not proof the wallet moved: only an eth_chainId readback is. 15 polls at 200ms give
+// a slow wallet 3 seconds before the flow refuses to send on the wrong chain.
+const CHAIN_SWITCH_POLL_MS = 200;
+const CHAIN_SWITCH_MAX_POLLS = 15;
+
+// Make sure the injected wallet is on the configured chain: request a switch if not,
+// offer to add the chain when the wallet does not know it (4902), then trust only a
+// re-read of eth_chainId before letting a transaction flow proceed. Without the
+// readback, a wallet that resolves the switch request optimistically lets the caller
+// send on the old chain and fail later with a chain-mismatch at the first write.
+export async function ensureChain(provider: Eip1193Provider, config: ClientMarketConfig): Promise<Result<true>> {
+  const targetId = config.chain.id;
+  if ((await readWalletChainId(provider)) === targetId) {
+    return ok(true);
+  }
+  try {
     await provider.request({
       method: "wallet_switchEthereumChain",
-      params: [{ chainId: toHex(config.chain.id) }],
+      params: [{ chainId: toHex(targetId) }],
     });
-    return ok(true);
-  } catch {
-    return err(`switch your wallet to ${config.chain.name} (chain ${config.chain.id})`);
+  } catch (caught) {
+    const code = providerErrorCode(caught);
+    if (code === USER_REJECTED_CODE) {
+      return err(`chain switch rejected in the wallet; switch to ${config.chain.name} (chain ${targetId}) to continue`);
+    }
+    if (code !== UNRECOGNIZED_CHAIN_CODE) {
+      return err(`could not switch the wallet to ${config.chain.name} (chain ${targetId})`);
+    }
+    // 4902: the wallet does not know the chain yet. Adding it also prompts a switch.
+    try {
+      const explorer = config.chain.blockExplorers?.default;
+      await provider.request({
+        method: "wallet_addEthereumChain",
+        params: [
+          {
+            chainId: toHex(targetId),
+            chainName: config.chain.name,
+            nativeCurrency: config.chain.nativeCurrency,
+            rpcUrls: [config.rpcUrl],
+            ...(explorer === undefined ? {} : { blockExplorerUrls: [explorer.url] }),
+          },
+        ],
+      });
+    } catch (addCaught) {
+      return providerErrorCode(addCaught) === USER_REJECTED_CODE
+        ? err(`adding ${config.chain.name} rejected in the wallet; add chain ${targetId} to continue`)
+        : err(`could not add ${config.chain.name} (chain ${targetId}) to the wallet`);
+    }
   }
+  for (let poll = 0; poll < CHAIN_SWITCH_MAX_POLLS; poll++) {
+    if ((await readWalletChainId(provider)) === targetId) {
+      return ok(true);
+    }
+    await new Promise((resolve) => setTimeout(resolve, CHAIN_SWITCH_POLL_MS));
+  }
+  return err(`the wallet is still not on ${config.chain.name} (chain ${targetId}); switch it in the wallet and retry`);
 }
 
 // Post the prepared bounty from the injected wallet, escrowing payout + bond. The
