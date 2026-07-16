@@ -1,7 +1,7 @@
-import { createPublicClient, http, isAddress } from "viem";
+import { createPublicClient, isAddress } from "viem";
 import type { Address, Chain, PublicClient } from "viem";
-import { BountyStatus, MarketClient, chainForKey } from "@dragnet/sdk";
-import type { ChainKey, WorkerEvent } from "@dragnet/sdk";
+import { BountyStatus, MarketClient, chainForKey, dragnetHttpTransport } from "@dragnet/sdk";
+import type { ChainKey } from "@dragnet/sdk";
 import { formatMon, formatRange, truncateHex } from "./format";
 import { SAMPLE_ROWS, sampleDetailFor } from "./records";
 import type { BountyDetail, DataSource, LedgerRow, WorkerLogEntry } from "./records";
@@ -32,15 +32,37 @@ interface MarketEnv {
   deployBlock: bigint;
 }
 
+// A deploy block that resolves to 0 (env unset or malformed) forces every BountyPosted
+// scan to page backward toward genesis whenever a post is not found near the head, slow
+// enough on a live network to time out a render. The CLI config path rejects bad input
+// outright (packages/sdk/src/config.ts); the web app degrades instead of failing, so
+// surface the misconfiguration once per process rather than letting it stay silent.
+let deployBlockWarned = false;
+function warnDeployBlockOnce(reason: string): void {
+  if (deployBlockWarned) {
+    return;
+  }
+  deployBlockWarned = true;
+  console.warn(
+    `[market-data] ${reason}; defaulting to block 0. Set DRAGNET_DEPLOY_BLOCK to the market's deployment block so event scans stay bounded.`,
+  );
+}
+
 function parseDeployBlock(): bigint {
   const raw = process.env.DRAGNET_DEPLOY_BLOCK ?? process.env.NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK;
   if (raw === undefined || raw.length === 0) {
+    warnDeployBlockOnce("DRAGNET_DEPLOY_BLOCK is not set");
     return 0n;
   }
   try {
     const parsed = BigInt(raw);
-    return parsed < 0n ? 0n : parsed;
+    if (parsed < 0n) {
+      warnDeployBlockOnce(`DRAGNET_DEPLOY_BLOCK is negative (${raw})`);
+      return 0n;
+    }
+    return parsed;
   } catch {
+    warnDeployBlockOnce(`DRAGNET_DEPLOY_BLOCK is not a valid integer (${raw})`);
     return 0n;
   }
 }
@@ -63,8 +85,7 @@ function resolveEnv(): MarketEnv | null {
 }
 
 function publicClientFor(env: MarketEnv): PublicClient {
-  // Retry budget so an incidental rate-limit (Monad testnet caps requests) recovers.
-  return createPublicClient({ chain: env.chain, transport: http(env.rpcUrl, { retryCount: 6, retryDelay: 300 }) });
+  return createPublicClient({ chain: env.chain, transport: dragnetHttpTransport(env.rpcUrl) });
 }
 
 function clientFor(env: MarketEnv, publicClient: PublicClient): MarketClient {
@@ -112,7 +133,12 @@ export async function getLedger(): Promise<LedgerResult> {
   }
   const client = clientFor(env, publicClientFor(env));
   const count = await client.bountyCount();
-  const total = Number(count);
+  if (!count.ok) {
+    // Surface an essential-read failure to the route's error boundary intentionally,
+    // instead of a raw unhandled rejection from deep in the SDK.
+    throw new Error(`could not read the market: ${count.error}`);
+  }
+  const total = Number(count.value);
   const first = Math.max(1, total - LEDGER_LIMIT + 1);
   if (total > LEDGER_LIMIT) {
     console.warn(
@@ -122,7 +148,12 @@ export async function getLedger(): Promise<LedgerResult> {
   const rows: LedgerRow[] = [];
   for (let id = total; id >= first; id--) {
     const bounty = await client.getBounty(BigInt(id));
-    const row = rowFromChain(BigInt(id), bounty);
+    if (!bounty.ok) {
+      // One unreadable row should not blank the whole ledger; skip it and note why.
+      console.warn(`[getLedger] skipping bounty ${id}: ${bounty.error}`);
+      continue;
+    }
+    const row = rowFromChain(BigInt(id), bounty.value);
     if (row !== null) {
       rows.push(row);
     }
@@ -193,13 +224,14 @@ function fieldEntryFor(record: WorkerRecord, m: number): WorkerLogEntry {
 // log rather than failing the page, and the reason is logged (never any secret).
 // Workers appear in the order they first commit, with the terminal state folded in.
 async function buildFieldLog(client: MarketClient, bountyId: bigint, m: number): Promise<WorkerLogEntry[]> {
-  let events: WorkerEvent[];
-  try {
-    events = await client.fetchFieldEvents(bountyId);
-  } catch (caught) {
-    console.warn(`[buildFieldLog] could not read events for bounty ${bountyId}: ${String(caught)}`);
+  // Best-effort: an RPC failure yields an empty log rather than failing the page (the
+  // field log is supplementary to the bounty itself), and the reason is logged.
+  const eventsResult = await client.fetchFieldEvents(bountyId);
+  if (!eventsResult.ok) {
+    console.warn(`[buildFieldLog] could not read events for bounty ${bountyId}: ${eventsResult.error}`);
     return [];
   }
+  const events = eventsResult.value;
 
   // Map preserves first-insertion order, so a worker keeps its commit position
   // while a later Paid/Slashed overwrites its state in place.
@@ -223,7 +255,13 @@ export interface DetailResult {
   source: DataSource;
 }
 
-export async function getBountyDetail(id: string): Promise<DetailResult | null> {
+// includeFieldLog defaults to true (the detail page renders the worker field log). The
+// run page passes false: it shows none of the field log, so it should not pay for the
+// event scan that builds it, which on a drifted chain is the slowest read on the page.
+export async function getBountyDetail(
+  id: string,
+  options?: { includeFieldLog?: boolean },
+): Promise<DetailResult | null> {
   const env = resolveEnv();
   if (env === null) {
     return { detail: sampleDetailFor(id), source: "sample" };
@@ -237,15 +275,23 @@ export async function getBountyDetail(id: string): Promise<DetailResult | null> 
   const publicClient = publicClientFor(env);
   const client = clientFor(env, publicClient);
   const count = await client.bountyCount();
-  if (numericId < 1n || numericId > count) {
+  if (!count.ok) {
+    throw new Error(`could not read the market: ${count.error}`);
+  }
+  if (numericId < 1n || numericId > count.value) {
     return null;
   }
-  const bounty = await client.getBounty(numericId);
+  const bountyResult = await client.getBounty(numericId);
+  if (!bountyResult.ok) {
+    throw new Error(`could not read bounty ${id}: ${bountyResult.error}`);
+  }
+  const bounty = bountyResult.value;
   const status = STATUS_NAME[bounty.status];
   if (status === undefined) {
     return null;
   }
-  const workers = await buildFieldLog(client, numericId, bounty.m);
+  const workers =
+    options?.includeFieldLog === false ? [] : await buildFieldLog(client, numericId, bounty.m);
   const nowSec = Math.floor(Date.now() / 1000);
   const claimRemaining = status === "Open" ? Math.max(0, Number(bounty.claimDeadline) - nowSec) : null;
   const paid = status === "Paid";

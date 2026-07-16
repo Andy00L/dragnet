@@ -1,8 +1,8 @@
-import { createPublicClient, createWalletClient, custom, http, isHex, parseEther, toHex } from "viem";
+import { createPublicClient, createWalletClient, custom, isHex, parseEther, toHex } from "viem";
 import type { Account, Address, Hex } from "viem";
 import { addressesToBytes, buildTargetList, err, generateCanaries, ok } from "@dragnet/crypto";
 import type { Result } from "@dragnet/crypto";
-import { MarketClient } from "@dragnet/sdk";
+import { MarketClient, dragnetHttpTransport } from "@dragnet/sdk";
 import type { ClientMarketConfig } from "./client-config";
 
 // EIP-1193 provider shape (same as WalletProvider). The post flow never logs or
@@ -110,7 +110,7 @@ export async function postOnChain(
     return chainReady;
   }
   const account: Account = { address: buyer, type: "json-rpc" };
-  const publicClient = createPublicClient({ chain: config.chain, transport: http(config.rpcUrl) });
+  const publicClient = createPublicClient({ chain: config.chain, transport: dragnetHttpTransport(config.rpcUrl) });
   const walletClient = createWalletClient({ chain: config.chain, transport: custom(provider), account });
   const market = new MarketClient(config.marketAddress, publicClient, walletClient, account);
   return market.postBounty({

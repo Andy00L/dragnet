@@ -14,6 +14,7 @@
     "setup:contracts": "bash scripts/setup-contracts.sh",
     "test:contracts": "cd contracts && forge test",
     "test:crypto": "bun test packages/crypto",
+    "test:sdk": "bun test packages/sdk",
     "typecheck": "bunx tsc --build --verbose",
     "buyer": "bun run packages/buyer/src/cli.ts",
     "scanner": "bun run packages/scanner/src/cli.ts"

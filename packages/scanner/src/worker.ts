@@ -41,7 +41,19 @@ export async function runWorker(
   const log = options.log ?? ((message: string) => console.log(`[runWorker] ${message}`));
   const say = (message: string): void => log(`[runWorker] ${message}`);
 
-  const bounty = await market.getBounty(options.bountyId);
+  const bountyResult = await market.getBounty(options.bountyId);
+  if (!bountyResult.ok) {
+    say(`could not read bounty ${options.bountyId}: ${bountyResult.error}`);
+    return {
+      found: 0,
+      required: 0,
+      committed: false,
+      revealed: false,
+      paid: false,
+      revertReason: bountyResult.error,
+    };
+  }
+  const bounty = bountyResult.value;
   const outcome: WorkerOutcome = {
     found: 0,
     required: bounty.m,
@@ -126,7 +138,11 @@ export async function runWorker(
   say("committed; waiting for the next block before revealing");
 
   const commitBlock = await market.getTransactionBlock(committed.value);
-  const advanced = await market.waitForBlockAfter(commitBlock);
+  if (!commitBlock.ok) {
+    say(`could not read the commit block: ${commitBlock.error}`);
+    return outcome;
+  }
+  const advanced = await market.waitForBlockAfter(commitBlock.value);
   if (!advanced.ok) {
     say(`gave up waiting to reveal: ${advanced.error}`);
     return outcome;
@@ -143,8 +159,9 @@ export async function runWorker(
 
   const settled = await market.getBounty(options.bountyId);
   outcome.paid =
-    settled.status === BountyStatus.Paid &&
-    settled.winner.toLowerCase() === workerAddress.toLowerCase();
+    settled.ok &&
+    settled.value.status === BountyStatus.Paid &&
+    settled.value.winner.toLowerCase() === workerAddress.toLowerCase();
 
   if (outcome.paid) {
     say("coverage proven; withdrawing payout");

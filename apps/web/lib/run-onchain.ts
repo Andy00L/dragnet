@@ -1,9 +1,9 @@
-import { createPublicClient, createWalletClient, custom, http, toHex } from "viem";
+import { createPublicClient, createWalletClient, custom, toHex } from "viem";
 import type { Account, Address, Hex } from "viem";
 import { buildReveal, commitHash, err, ok, targetListMatchesRoot } from "@dragnet/crypto";
 import type { Result } from "@dragnet/crypto";
 import { scanRange } from "@dragnet/scanner";
-import { BountyStatus, MarketClient } from "@dragnet/sdk";
+import { BountyStatus, MarketClient, dragnetHttpTransport } from "@dragnet/sdk";
 import type { ClientMarketConfig } from "./client-config";
 import { ensureChain } from "./post-onchain";
 import type { Eip1193Provider } from "./post-onchain";
@@ -42,17 +42,14 @@ export interface RunOutcome {
   revertReason?: string;
 }
 
-// Retry budget so an incidental rate-limit (Monad testnet caps requests) recovers.
-const readTransport = (rpcUrl: string) => http(rpcUrl, { retryCount: 6, retryDelay: 300 });
-
-function readClient(config: ClientMarketConfig): MarketClient {
-  const publicClient = createPublicClient({ chain: config.chain, transport: readTransport(config.rpcUrl) });
+export function readClient(config: ClientMarketConfig): MarketClient {
+  const publicClient = createPublicClient({ chain: config.chain, transport: dragnetHttpTransport(config.rpcUrl) });
   return new MarketClient(config.marketAddress, publicClient, undefined, undefined, config.deployBlock);
 }
 
-function writeClient(provider: Eip1193Provider, worker: Address, config: ClientMarketConfig): MarketClient {
+export function writeClient(provider: Eip1193Provider, worker: Address, config: ClientMarketConfig): MarketClient {
   const account: Account = { address: worker, type: "json-rpc" };
-  const publicClient = createPublicClient({ chain: config.chain, transport: readTransport(config.rpcUrl) });
+  const publicClient = createPublicClient({ chain: config.chain, transport: dragnetHttpTransport(config.rpcUrl) });
   const walletClient = createWalletClient({ chain: config.chain, transport: custom(provider), account });
   return new MarketClient(config.marketAddress, publicClient, walletClient, account, config.deployBlock);
 }
@@ -70,26 +67,31 @@ function nextFrame(): Promise<void> {
 
 // Read the bounty and its published target list, verifying the list rebuilds to
 // the on-chain root before any scan. A mismatched list would only waste the sweep
-// and revert at reveal, so refuse it up front. getBounty is a raw read (throws),
-// so it is wrapped; fetchTargetList already returns a Result.
+// and revert at reveal, so refuse it up front. Both reads return a Result, so an
+// RPC failure surfaces as a clean error here rather than a thrown rejection.
 export async function loadRunTarget(config: ClientMarketConfig, bountyId: bigint): Promise<Result<RunTarget>> {
   const market = readClient(config);
-  try {
-    const bounty = await market.getBounty(bountyId);
-    if (bounty.status !== BountyStatus.Open) {
-      return err(`bounty ${bountyId} is not open for sweeping`);
-    }
-    const addresses = await market.fetchTargetList(bountyId);
-    if (!addresses.ok) {
-      return addresses;
-    }
-    if (!targetListMatchesRoot(addresses.value, bounty.targetRoot)) {
-      return err("the published target list does not match the on-chain root; refusing to sweep");
-    }
-    return ok({ lo: bounty.lo, hi: bounty.hi, m: bounty.m, addresses: addresses.value, payout: bounty.payout });
-  } catch (caught) {
-    return err(`could not read bounty ${bountyId}: ${caught instanceof Error ? caught.message : String(caught)}`);
+  const bounty = await market.getBounty(bountyId);
+  if (!bounty.ok) {
+    return err(`could not read bounty ${bountyId}: ${bounty.error}`);
   }
+  if (bounty.value.status !== BountyStatus.Open) {
+    return err(`bounty ${bountyId} is not open for sweeping`);
+  }
+  const addresses = await market.fetchTargetList(bountyId);
+  if (!addresses.ok) {
+    return addresses;
+  }
+  if (!targetListMatchesRoot(addresses.value, bounty.value.targetRoot)) {
+    return err("the published target list does not match the on-chain root; refusing to sweep");
+  }
+  return ok({
+    lo: bounty.value.lo,
+    hi: bounty.value.hi,
+    m: bounty.value.m,
+    addresses: addresses.value,
+    payout: bounty.value.payout,
+  });
 }
 
 // Sweep [lo, hi] (optionally stopping short by skipFraction from the top, the
@@ -181,7 +183,11 @@ export async function commitAndReveal(
   outcome.commitTx = committed.value;
 
   const commitBlock = await market.getTransactionBlock(committed.value);
-  const advanced = await market.waitForBlockAfter(commitBlock);
+  if (!commitBlock.ok) {
+    outcome.revertReason = commitBlock.error;
+    return ok(outcome);
+  }
+  const advanced = await market.waitForBlockAfter(commitBlock.value);
   if (!advanced.ok) {
     outcome.revertReason = advanced.error;
     return ok(outcome);
@@ -198,7 +204,9 @@ export async function commitAndReveal(
 
   const settled = await market.getBounty(bountyId);
   outcome.paid =
-    settled.status === BountyStatus.Paid && settled.winner.toLowerCase() === worker.toLowerCase();
+    settled.ok &&
+    settled.value.status === BountyStatus.Paid &&
+    settled.value.winner.toLowerCase() === worker.toLowerCase();
   return ok(outcome);
 }
 
