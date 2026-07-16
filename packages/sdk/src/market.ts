@@ -15,6 +15,7 @@ import {
 import { type Result, type RevealPayload, bytesToAddresses, err, ok } from "@dragnet/crypto";
 import { dragnetMarketAbi } from "./abi";
 import type { DragnetConfig } from "./config";
+import { pagedWindowsForward, pagedWindowsFromBothEnds } from "./paging";
 import { dragnetHttpTransport } from "./transport";
 
 export enum BountyStatus {
@@ -70,10 +71,14 @@ export interface WorkerEvent {
 // windows this wide. sourceRef: Monad testnet JSON-RPC (eth_getLogs).
 const LOG_WINDOW = 100n;
 
-// Pause between successive paged getLogs calls. Monad testnet caps requests at
-// 25/sec (error -32005); one request per window plus this gap keeps a multi-window
-// field-log scan comfortably under that. sourceRef: Monad testnet JSON-RPC.
-const LOG_THROTTLE_MS = 45;
+// Upper bound on how many windows the supplementary field-log scan pages forward from a
+// bounty's post before giving up on the tail. Caps the request budget so a bounty whose
+// post sits far below the current head does not turn a best-effort field log into a
+// thousands-of-windows scan that times out the render. 50 windows (5,000 blocks after
+// the post) covers where worker activity clusters while keeping the server render well
+// under a serverless timeout. Request pacing itself lives in the shared transport (see
+// transport.ts), not here.
+const MAX_FIELD_WINDOWS = 50n;
 
 export class MarketClient {
   private readonly publicClient: PublicClient;
@@ -201,39 +206,33 @@ export class MarketClient {
     }
   }
 
-  /// Find the newest match for a paged query, scanning [deployBlock, head] backward
-  /// in windows so a recent event resolves in the first request. Used for one-off
-  /// lookups (the target list, posted once per bounty).
-  private async findLatestPaged<TLog>(
+  /// Find a bounty's unique event (its BountyPosted) by paging [deployBlock, head] from
+  /// both ends toward the middle (see pagedWindowsFromBothEnds), so the post resolves in
+  /// a few windows whether the bounty is old (near deployBlock, the head having drifted
+  /// far past it) or freshly posted (near head). A topic-filtered query returns at most
+  /// one log per window, so the first element is the match. Relies on deployBlock being
+  /// set at or below the market's deployment block: a deployBlock of 0 makes the low end
+  /// scan from genesis, so keep it configured.
+  private async findEventBothEnds<TLog>(
     query: (fromBlock: bigint, toBlock: bigint) => Promise<TLog[]>,
   ): Promise<TLog | undefined> {
     const head = await this.publicClient.getBlockNumber();
-    let toBlock = head;
-    while (toBlock >= this.deployBlock) {
-      const fromBlock =
-        toBlock - LOG_WINDOW + 1n < this.deployBlock ? this.deployBlock : toBlock - LOG_WINDOW + 1n;
+    for (const [fromBlock, toBlock] of pagedWindowsFromBothEnds(this.deployBlock, head, LOG_WINDOW)) {
       const logs = await query(fromBlock, toBlock);
-      const last = logs[logs.length - 1];
-      if (last !== undefined) {
-        return last;
+      const hit = logs[0];
+      if (hit !== undefined) {
+        return hit;
       }
-      if (fromBlock <= this.deployBlock) {
-        break;
-      }
-      toBlock = fromBlock - 1n;
-      // Throttle between windows so a multi-window backward scan stays under the
-      // RPC's request-rate cap (the same reason fetchFieldEvents throttles its
-      // forward loop); without this the scan bursts getLogs and trips -32005.
-      await new Promise((resolve) => setTimeout(resolve, LOG_THROTTLE_MS));
     }
     return undefined;
   }
 
-  /// Find the BountyPosted event for one bounty, scanning newest-first so a recent
-  /// post resolves in the first window. Shared by fetchTargetList and the field-log
-  /// scan, which both need the post (its list, and the block it landed in).
+  /// Find the BountyPosted event for one bounty, scanning from both ends of
+  /// [deployBlock, head] so a post resolves quickly whether the bounty is old (near
+  /// deployBlock) or freshly posted (near head). Shared by fetchTargetList and the
+  /// field-log scan, which both need the post (its list, and the block it landed in).
   private async findBountyPosted(bountyId: bigint) {
-    return this.findLatestPaged((fromBlock, toBlock) =>
+    return this.findEventBothEnds((fromBlock, toBlock) =>
       this.publicClient.getContractEvents({
         ...this.base(),
         eventName: "BountyPosted",
@@ -256,8 +255,9 @@ export class MarketClient {
 
   /// Fetch and flatten the Committed, Paid, and Slashed events for a bounty into a
   /// single chronologically sorted list (the field log source). One getLogs per
-  /// window (sequential, throttled) keeps the scan under the RPC's request-rate cap;
-  /// the raw logs are decoded locally, so extra event types cost no requests.
+  /// window, paced by the shared transport (see transport.ts) so the scan stays under
+  /// the RPC's request-rate cap; the raw logs are decoded locally, so extra event
+  /// types cost no requests.
   async fetchFieldEvents(bountyId: bigint): Promise<Result<WorkerEvent[]>> {
     return this.guardedRead(() => this.readFieldEvents(bountyId));
   }
@@ -275,18 +275,24 @@ export class MarketClient {
       posted?.blockNumber !== undefined && posted.blockNumber !== null
         ? posted.blockNumber
         : this.deployBlock;
+    // The field log is supplementary, so bound how far it pages forward: once the head
+    // has drifted far past the post, an unbounded [post, head] scan would be thousands of
+    // windows and time out the render. Scan a capped span after the post (where worker
+    // activity clusters) and note a skipped tail rather than hanging.
+    const scanCeiling = startBlock + LOG_WINDOW * MAX_FIELD_WINDOWS - 1n;
+    const lastBlock = scanCeiling < head ? scanCeiling : head;
     const rawLogs: Log[] = [];
-    let fromBlock = startBlock;
-    while (fromBlock <= head) {
-      const toBlock = fromBlock + LOG_WINDOW - 1n > head ? head : fromBlock + LOG_WINDOW - 1n;
+    for (const [fromBlock, toBlock] of pagedWindowsForward(startBlock, lastBlock, LOG_WINDOW)) {
       const logs = await this.publicClient.getLogs({ address: this.address, fromBlock, toBlock });
       for (const log of logs) {
         rawLogs.push(log);
       }
-      fromBlock = toBlock + 1n;
-      if (fromBlock <= head) {
-        await new Promise((resolve) => setTimeout(resolve, LOG_THROTTLE_MS));
-      }
+    }
+    if (lastBlock < head) {
+      console.warn(
+        `[readFieldEvents] field log for bounty ${bountyId} scanned ${startBlock}..${lastBlock}; ` +
+          `skipped ${head - lastBlock} later blocks to stay within the request budget`,
+      );
     }
 
     const events: WorkerEvent[] = [];

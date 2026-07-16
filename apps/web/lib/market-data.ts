@@ -255,7 +255,13 @@ export interface DetailResult {
   source: DataSource;
 }
 
-export async function getBountyDetail(id: string): Promise<DetailResult | null> {
+// includeFieldLog defaults to true (the detail page renders the worker field log). The
+// run page passes false: it shows none of the field log, so it should not pay for the
+// event scan that builds it, which on a drifted chain is the slowest read on the page.
+export async function getBountyDetail(
+  id: string,
+  options?: { includeFieldLog?: boolean },
+): Promise<DetailResult | null> {
   const env = resolveEnv();
   if (env === null) {
     return { detail: sampleDetailFor(id), source: "sample" };
@@ -284,7 +290,8 @@ export async function getBountyDetail(id: string): Promise<DetailResult | null> 
   if (status === undefined) {
     return null;
   }
-  const workers = await buildFieldLog(client, numericId, bounty.m);
+  const workers =
+    options?.includeFieldLog === false ? [] : await buildFieldLog(client, numericId, bounty.m);
   const nowSec = Math.floor(Date.now() / 1000);
   const claimRemaining = status === "Open" ? Math.max(0, Number(bounty.claimDeadline) - nowSec) : null;
   const paid = status === "Paid";
