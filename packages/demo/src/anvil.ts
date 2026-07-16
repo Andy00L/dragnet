@@ -22,7 +22,14 @@ export async function startAnvil(port = 8545, blockTimeSeconds = 1): Promise<Anv
     { stdout: "ignore", stderr: "ignore" },
   );
   const rpcUrl = `http://127.0.0.1:${port}`;
-  await waitForRpc(rpcUrl);
+  try {
+    await waitForRpc(rpcUrl);
+  } catch (caught) {
+    // The handle (and its stop()) is never returned on this path, so kill the child
+    // here or it is orphaned, holding the port and failing every later run.
+    proc.kill();
+    throw caught;
+  }
   return {
     rpcUrl,
     stop: () => {

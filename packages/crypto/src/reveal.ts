@@ -33,7 +33,8 @@ export function buildReveal(foundKeys: bigint[], addresses: Hex[]): Result<Revea
     }
     const index = lowerAddresses.indexOf(hashed.value.toLowerCase());
     if (index === -1) {
-      return err(`found key ${key} maps to ${hashed.value}, which is not in the target list`);
+      // Report the public hash160, never the secret private key it came from.
+      return err(`a found key maps to ${hashed.value}, which is not in the target list`);
     }
     const proof = proofForIndex(tree.value, index);
     if (!proof.ok) {

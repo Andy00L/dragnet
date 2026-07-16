@@ -1,12 +1,15 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { truncateHex } from "@/lib/format";
 
 // Minimal EIP-1193 surface for an injected wallet. No `any`: the request result is
-// validated at the call site before use.
+// validated at the call site before use. `on`/`removeListener` are optional because
+// not every injected provider implements the event surface.
 interface Eip1193Provider {
   request(args: { method: string; params?: unknown[] }): Promise<unknown>;
+  on?(event: string, handler: (...args: unknown[]) => void): void;
+  removeListener?(event: string, handler: (...args: unknown[]) => void): void;
 }
 
 declare global {
@@ -63,6 +66,34 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       })
       .finally(() => setConnecting(false));
   }, [address, connecting]);
+
+  // Sync with the injected wallet, an external system React does not own: mirror the
+  // user switching or disconnecting the active account into state, so a later
+  // transaction never signs as a stale address. Cleanup removes the listeners on
+  // unmount. sourceRef: EIP-1193 accountsChanged / chainChanged events.
+  useEffect(() => {
+    const provider = typeof window !== "undefined" ? window.ethereum : undefined;
+    if (provider?.on === undefined || provider.removeListener === undefined) {
+      return;
+    }
+    const handleAccountsChanged = (...args: unknown[]): void => {
+      const account = firstAccount(args[0]);
+      setAddress(account);
+      if (account === null) {
+        setError(null);
+      }
+    };
+    const handleChainChanged = (): void => {
+      // A chain switch does not change the account; clear any stale wrong-network error.
+      setError(null);
+    };
+    provider.on("accountsChanged", handleAccountsChanged);
+    provider.on("chainChanged", handleChainChanged);
+    return () => {
+      provider.removeListener?.("accountsChanged", handleAccountsChanged);
+      provider.removeListener?.("chainChanged", handleChainChanged);
+    };
+  }, []);
 
   const value = useMemo<WalletState>(
     () => ({

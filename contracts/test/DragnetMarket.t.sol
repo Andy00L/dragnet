@@ -20,6 +20,12 @@ contract DragnetMarketTest is Test {
         0xC6047F9441ED7D6D3045406E95C07CD85C778E4B8CEF3CA7ABAC09B95C709EE5;
     uint256 internal constant TWO_GY =
         0x1AE168FEA63DC339A3C58419466CEAEEF7F632653266D0E1236431A950CFE52A;
+    // Point 3*G, the well-known public key of private key 3. sourceRef: @noble/curves
+    // secp256k1 (cross-checked in packages/crypto/test the same way as 2*G).
+    uint256 internal constant THREE_GX =
+        0xF9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9;
+    uint256 internal constant THREE_GY =
+        0x388F7B0F632DE8140FE337E62A37F3566500A99934C2231B6CB9FD7584B8E672;
 
     uint256 internal constant PAYOUT = 5 ether;
     uint256 internal constant BOND = 3 ether;
@@ -152,6 +158,47 @@ contract DragnetMarketTest is Test {
         vm.prank(buyer);
         vm.expectRevert(DragnetMarket.RangeTooSmall.selector);
         market.postBounty{value: PAYOUT + BOND}(1, 3, 5, root2, PAYOUT, BOND, CLAIM_WINDOW, OPEN_WINDOW, "");
+    }
+
+    function test_PostRevertsOnZeroRoot() public {
+        vm.prank(buyer);
+        vm.expectRevert(DragnetMarket.RootZero.selector);
+        market.postBounty{value: PAYOUT + BOND}(LO, HI, 2, bytes32(0), PAYOUT, BOND, CLAIM_WINDOW, OPEN_WINDOW, "");
+    }
+
+    function test_PostRevertsOnZeroPayout() public {
+        vm.prank(buyer);
+        vm.expectRevert(DragnetMarket.PayoutZero.selector);
+        market.postBounty{value: BOND}(LO, HI, 2, root2, 0, BOND, CLAIM_WINDOW, OPEN_WINDOW, "");
+    }
+
+    function test_PostRevertsOnZeroBond() public {
+        vm.prank(buyer);
+        vm.expectRevert(DragnetMarket.BondZero.selector);
+        market.postBounty{value: PAYOUT}(LO, HI, 2, root2, PAYOUT, 0, CLAIM_WINDOW, OPEN_WINDOW, "");
+    }
+
+    function test_PostRevertsOnCountAboveMax() public {
+        // MAX_M is 256 (DragnetMarket.sol), capping the reveal loop's gas.
+        vm.prank(buyer);
+        vm.expectRevert(DragnetMarket.CountInvalid.selector);
+        market.postBounty{value: PAYOUT + BOND}(LO, HI, 257, root2, PAYOUT, BOND, CLAIM_WINDOW, OPEN_WINDOW, "");
+    }
+
+    function test_PostRevertsOnBadWindows() public {
+        // MAX_WINDOW is 365 days (DragnetMarket.sol); zero and above-max are both
+        // invalid, for each of the two windows.
+        uint64 aboveMax = uint64(365 days) + 1;
+        vm.startPrank(buyer);
+        vm.expectRevert(DragnetMarket.WindowInvalid.selector);
+        market.postBounty{value: PAYOUT + BOND}(LO, HI, 2, root2, PAYOUT, BOND, 0, OPEN_WINDOW, "");
+        vm.expectRevert(DragnetMarket.WindowInvalid.selector);
+        market.postBounty{value: PAYOUT + BOND}(LO, HI, 2, root2, PAYOUT, BOND, aboveMax, OPEN_WINDOW, "");
+        vm.expectRevert(DragnetMarket.WindowInvalid.selector);
+        market.postBounty{value: PAYOUT + BOND}(LO, HI, 2, root2, PAYOUT, BOND, CLAIM_WINDOW, 0, "");
+        vm.expectRevert(DragnetMarket.WindowInvalid.selector);
+        market.postBounty{value: PAYOUT + BOND}(LO, HI, 2, root2, PAYOUT, BOND, CLAIM_WINDOW, aboveMax, "");
+        vm.stopPrank();
     }
 
     // --- happy path ---
@@ -345,6 +392,81 @@ contract DragnetMarketTest is Test {
         market.reveal(id, keys, px, py, proofs, SALT);
     }
 
+    // --- key verification revert paths ---
+
+    function test_RevealRevertsWhenKeysNotAscending() public {
+        uint256 id = _postTwoCanaryBounty();
+        // Both keys are listed canaries, but presented in descending order.
+        uint256[] memory keys = new uint256[](2);
+        keys[0] = 2;
+        keys[1] = 1;
+        uint256[] memory px = new uint256[](2);
+        px[0] = TWO_GX;
+        px[1] = GX;
+        uint256[] memory py = new uint256[](2);
+        py[0] = TWO_GY;
+        py[1] = GY;
+        bytes32[][] memory proofs = new bytes32[][](2);
+        proofs[0] = new bytes32[](1);
+        proofs[0][0] = leaf1;
+        proofs[1] = new bytes32[](1);
+        proofs[1][0] = leaf2;
+
+        vm.prank(workerA);
+        market.commit(id, _commitHash(keys, workerA));
+        vm.roll(block.number + 1);
+        vm.prank(workerA);
+        vm.expectRevert(DragnetMarket.KeysNotAscending.selector);
+        market.reveal(id, keys, px, py, proofs, SALT);
+    }
+
+    function test_RevealRevertsWhenKeyOutOfRange() public {
+        // Bounty over [2, HI]: revealing key 1 falls below lo.
+        bytes memory list = abi.encodePacked(
+            Secp256k1.hash160Compressed(GX, GY), Secp256k1.hash160Compressed(TWO_GX, TWO_GY)
+        );
+        vm.prank(buyer);
+        uint256 id = market.postBounty{value: PAYOUT + BOND}(
+            2, HI, 2, root2, PAYOUT, BOND, CLAIM_WINDOW, OPEN_WINDOW, list
+        );
+        (uint256[] memory keys, uint256[] memory px, uint256[] memory py, bytes32[][] memory proofs) =
+            _twoKeyReveal();
+
+        vm.prank(workerA);
+        market.commit(id, _commitHash(keys, workerA));
+        vm.roll(block.number + 1);
+        vm.prank(workerA);
+        vm.expectRevert(DragnetMarket.KeyOutOfRange.selector);
+        market.reveal(id, keys, px, py, proofs, SALT);
+    }
+
+    function test_RevealRevertsWhenKeyNotListed() public {
+        uint256 id = _postTwoCanaryBounty();
+        // Key 3 with its true point 3*G: valid, in range, ascending, but its
+        // hash160 is not a leaf of the two-canary tree.
+        uint256[] memory keys = new uint256[](2);
+        keys[0] = 1;
+        keys[1] = 3;
+        uint256[] memory px = new uint256[](2);
+        px[0] = GX;
+        px[1] = THREE_GX;
+        uint256[] memory py = new uint256[](2);
+        py[0] = GY;
+        py[1] = THREE_GY;
+        bytes32[][] memory proofs = new bytes32[][](2);
+        proofs[0] = new bytes32[](1);
+        proofs[0][0] = leaf2;
+        proofs[1] = new bytes32[](1);
+        proofs[1][0] = leaf1; // no valid proof exists for an unlisted leaf
+
+        vm.prank(workerA);
+        market.commit(id, _commitHash(keys, workerA));
+        vm.roll(block.number + 1);
+        vm.prank(workerA);
+        vm.expectRevert(DragnetMarket.NotListed.selector);
+        market.reveal(id, keys, px, py, proofs, SALT);
+    }
+
     // --- buyer open / refund ---
 
     function test_BuyerOpensUnclaimedBountyAndReclaims() public {
@@ -431,6 +553,59 @@ contract DragnetMarketTest is Test {
         market.withdraw();
     }
 
+    function test_ReentrantWithdrawIsBlockedAndPaysOnce() public {
+        uint256 id = _postTwoCanaryBounty();
+        ReentrantWithdrawer attacker = new ReentrantWithdrawer(market);
+
+        // The attacker becomes a committer, then slashes after both windows, so a
+        // contract account ends up with a credited balance to withdraw.
+        attacker.commitTo(id, keccak256("attacker-commit"));
+        vm.warp(block.timestamp + CLAIM_WINDOW + OPEN_WINDOW + 1);
+        attacker.slashBounty(id);
+        assertEq(market.pendingWithdrawals(address(attacker)), PAYOUT + BOND);
+
+        attacker.withdrawAll();
+
+        // The nested withdraw inside receive() must have reverted with Reentrancy,
+        // and the attacker is paid exactly once.
+        assertTrue(attacker.sawReentrancyRevert());
+        assertEq(address(attacker).balance, PAYOUT + BOND);
+        assertEq(market.pendingWithdrawals(address(attacker)), 0);
+        assertEq(address(market).balance, 0);
+    }
+
+    function test_RevertingRecipientOnlyBlocksItsOwnWithdrawal() public {
+        // A buyer contract that rejects all ether: its bond withdrawal fails with
+        // WithdrawFailed and stays credited, while the paid worker withdraws fine.
+        RejectingReceiver rejectingBuyer = new RejectingReceiver(market);
+        vm.deal(address(this), PAYOUT + BOND);
+        bytes memory list = abi.encodePacked(
+            Secp256k1.hash160Compressed(GX, GY), Secp256k1.hash160Compressed(TWO_GX, TWO_GY)
+        );
+        uint256 id = rejectingBuyer.post{value: PAYOUT + BOND}(
+            LO, HI, 2, root2, PAYOUT, BOND, CLAIM_WINDOW, OPEN_WINDOW, list
+        );
+
+        (uint256[] memory keys, uint256[] memory px, uint256[] memory py, bytes32[][] memory proofs) =
+            _twoKeyReveal();
+        vm.prank(workerA);
+        market.commit(id, _commitHash(keys, workerA));
+        vm.roll(block.number + 1);
+        vm.prank(workerA);
+        market.reveal(id, keys, px, py, proofs, SALT);
+
+        vm.expectRevert(DragnetMarket.WithdrawFailed.selector);
+        rejectingBuyer.withdrawAll();
+        // The failed withdrawal leaves the bond credited, not lost.
+        assertEq(market.pendingWithdrawals(address(rejectingBuyer)), BOND);
+
+        // The worker's withdrawal is unaffected by the failing recipient.
+        uint256 before = workerA.balance;
+        vm.prank(workerA);
+        market.withdraw();
+        assertEq(workerA.balance - before, PAYOUT);
+    }
+
     // --- escrow conservation across every terminal state ---
 
     /// @dev The contract's balance must always equal the escrow still held by Open
@@ -481,5 +656,72 @@ contract DragnetMarketTest is Test {
         vm.prank(buyer);
         market.withdraw();
         assertEq(address(market).balance, 0);
+    }
+}
+
+/// @dev Worker contract whose receive() re-enters withdraw, proving the guard
+///      blocks reentrancy and the account is paid exactly once.
+contract ReentrantWithdrawer {
+    DragnetMarket internal immutable market;
+    bool public sawReentrancyRevert;
+
+    constructor(DragnetMarket market_) {
+        market = market_;
+    }
+
+    function commitTo(uint256 bountyId, bytes32 commitDigest) external {
+        market.commit(bountyId, commitDigest);
+    }
+
+    function slashBounty(uint256 bountyId) external {
+        market.slash(bountyId);
+    }
+
+    function withdrawAll() external {
+        market.withdraw();
+    }
+
+    receive() external payable {
+        try market.withdraw() {
+            // A success here would mean the guard failed and paid twice; the test
+            // asserts sawReentrancyRevert, so that path fails the test.
+        } catch (bytes memory reason) {
+            sawReentrancyRevert =
+                keccak256(reason) == keccak256(abi.encodePacked(DragnetMarket.Reentrancy.selector));
+        }
+    }
+}
+
+/// @dev Buyer contract that rejects all incoming ether, so its own withdrawal
+///      fails with WithdrawFailed while every other account stays unaffected.
+contract RejectingReceiver {
+    DragnetMarket internal immutable market;
+
+    constructor(DragnetMarket market_) {
+        market = market_;
+    }
+
+    function post(
+        uint256 lo,
+        uint256 hi,
+        uint32 m,
+        bytes32 targetRoot,
+        uint256 payout,
+        uint256 bond,
+        uint64 claimWindow,
+        uint64 openWindow,
+        bytes calldata targetList
+    ) external payable returns (uint256 bountyId) {
+        return market.postBounty{value: msg.value}(
+            lo, hi, m, targetRoot, payout, bond, claimWindow, openWindow, targetList
+        );
+    }
+
+    function withdrawAll() external {
+        market.withdraw();
+    }
+
+    receive() external payable {
+        revert("ether rejected");
     }
 }

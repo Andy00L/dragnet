@@ -1,7 +1,7 @@
 import { createPublicClient, http, isAddress } from "viem";
 import type { Address, Chain, PublicClient } from "viem";
-import { BountyStatus, MarketClient, chainForKey, dragnetMarketAbi } from "@dragnet/sdk";
-import type { ChainKey } from "@dragnet/sdk";
+import { BountyStatus, MarketClient, chainForKey } from "@dragnet/sdk";
+import type { ChainKey, WorkerEvent } from "@dragnet/sdk";
 import { formatMon, formatRange, truncateHex } from "./format";
 import { SAMPLE_ROWS, sampleDetailFor } from "./records";
 import type { BountyDetail, DataSource, LedgerRow, WorkerLogEntry } from "./records";
@@ -28,6 +28,21 @@ interface MarketEnv {
   address: Address;
   chain: Chain;
   rpcUrl: string;
+  // Floor for event pagination; public RPCs cap eth_getLogs to a 100-block range.
+  deployBlock: bigint;
+}
+
+function parseDeployBlock(): bigint {
+  const raw = process.env.DRAGNET_DEPLOY_BLOCK ?? process.env.NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK;
+  if (raw === undefined || raw.length === 0) {
+    return 0n;
+  }
+  try {
+    const parsed = BigInt(raw);
+    return parsed < 0n ? 0n : parsed;
+  } catch {
+    return 0n;
+  }
 }
 
 function resolveEnv(): MarketEnv | null {
@@ -44,15 +59,16 @@ function resolveEnv(): MarketEnv | null {
     process.env.NEXT_PUBLIC_DRAGNET_RPC_URL ??
     chain.rpcUrls.default.http[0] ??
     "";
-  return { address, chain, rpcUrl };
+  return { address, chain, rpcUrl, deployBlock: parseDeployBlock() };
 }
 
 function publicClientFor(env: MarketEnv): PublicClient {
-  return createPublicClient({ chain: env.chain, transport: http(env.rpcUrl) });
+  // Retry budget so an incidental rate-limit (Monad testnet caps requests) recovers.
+  return createPublicClient({ chain: env.chain, transport: http(env.rpcUrl, { retryCount: 6, retryDelay: 300 }) });
 }
 
 function clientFor(env: MarketEnv, publicClient: PublicClient): MarketClient {
-  return new MarketClient(env.address, publicClient);
+  return new MarketClient(env.address, publicClient, undefined, undefined, env.deployBlock);
 }
 
 function rowFromChain(id: bigint, bounty: {
@@ -125,15 +141,6 @@ interface WorkerRecord {
   amount: bigint;
 }
 
-// One chain event flattened for chronological merging across the three streams.
-interface FieldEvent {
-  kind: WorkerState;
-  worker: Address;
-  amount: bigint;
-  block: bigint;
-  logIndex: number;
-}
-
 function fieldEntryFor(record: WorkerRecord, m: number): WorkerLogEntry {
   const full = record.worker;
   const addr = truncateHex(record.worker, 4, 4);
@@ -181,75 +188,34 @@ function fieldEntryFor(record: WorkerRecord, m: number): WorkerLogEntry {
   };
 }
 
-// Build the field log for one bounty from its Committed, Paid, and Slashed events.
-// Best-effort: an RPC failure yields an empty log rather than failing the page,
-// and the reason is logged (never any secret). Workers are shown in the order they
-// first appear (their commit), with the terminal state folded in.
-async function buildFieldLog(
-  publicClient: PublicClient,
-  marketAddress: Address,
-  bountyId: bigint,
-  m: number,
-): Promise<WorkerLogEntry[]> {
+// Build the field log for one bounty from its Committed, Paid, and Slashed events
+// (fetched and paginated by the SDK). Best-effort: an RPC failure yields an empty
+// log rather than failing the page, and the reason is logged (never any secret).
+// Workers appear in the order they first commit, with the terminal state folded in.
+async function buildFieldLog(client: MarketClient, bountyId: bigint, m: number): Promise<WorkerLogEntry[]> {
+  let events: WorkerEvent[];
   try {
-    const shared = {
-      address: marketAddress,
-      abi: dragnetMarketAbi,
-      args: { bountyId },
-      fromBlock: "earliest",
-    } as const;
-    const [committedLogs, paidLogs, slashedLogs] = await Promise.all([
-      publicClient.getContractEvents({ ...shared, eventName: "Committed" }),
-      publicClient.getContractEvents({ ...shared, eventName: "Paid" }),
-      publicClient.getContractEvents({ ...shared, eventName: "Slashed" }),
-    ]);
-
-    const events: FieldEvent[] = [];
-    for (const log of committedLogs) {
-      if (log.args.worker === undefined || log.blockNumber === null || log.logIndex === null) {
-        continue;
-      }
-      events.push({ kind: "committed", worker: log.args.worker, amount: 0n, block: log.blockNumber, logIndex: log.logIndex });
-    }
-    for (const log of paidLogs) {
-      if (log.args.worker === undefined || log.args.payout === undefined || log.blockNumber === null || log.logIndex === null) {
-        continue;
-      }
-      events.push({ kind: "paid", worker: log.args.worker, amount: log.args.payout, block: log.blockNumber, logIndex: log.logIndex });
-    }
-    for (const log of slashedLogs) {
-      if (log.args.committer === undefined || log.args.amount === undefined || log.blockNumber === null || log.logIndex === null) {
-        continue;
-      }
-      events.push({ kind: "slashed", worker: log.args.committer, amount: log.args.amount, block: log.blockNumber, logIndex: log.logIndex });
-    }
-
-    events.sort((left, right) => {
-      if (left.block !== right.block) {
-        return left.block < right.block ? -1 : 1;
-      }
-      return left.logIndex - right.logIndex;
-    });
-
-    // Map preserves first-insertion order, so a worker keeps its commit position
-    // while a later Paid/Slashed overwrites its state in place.
-    const byWorker = new Map<string, WorkerRecord>();
-    for (const event of events) {
-      const key = event.worker.toLowerCase();
-      if (event.kind === "committed") {
-        if (!byWorker.has(key)) {
-          byWorker.set(key, { worker: event.worker, state: "committed", amount: 0n });
-        }
-        continue;
-      }
-      byWorker.set(key, { worker: event.worker, state: event.kind, amount: event.amount });
-    }
-
-    return Array.from(byWorker.values(), (record) => fieldEntryFor(record, m));
+    events = await client.fetchFieldEvents(bountyId);
   } catch (caught) {
     console.warn(`[buildFieldLog] could not read events for bounty ${bountyId}: ${String(caught)}`);
     return [];
   }
+
+  // Map preserves first-insertion order, so a worker keeps its commit position
+  // while a later Paid/Slashed overwrites its state in place.
+  const byWorker = new Map<string, WorkerRecord>();
+  for (const event of events) {
+    const key = event.worker.toLowerCase();
+    if (event.kind === "committed") {
+      if (!byWorker.has(key)) {
+        byWorker.set(key, { worker: event.worker, state: "committed", amount: 0n });
+      }
+      continue;
+    }
+    byWorker.set(key, { worker: event.worker, state: event.kind, amount: event.amount });
+  }
+
+  return Array.from(byWorker.values(), (record) => fieldEntryFor(record, m));
 }
 
 export interface DetailResult {
@@ -279,7 +245,7 @@ export async function getBountyDetail(id: string): Promise<DetailResult | null> 
   if (status === undefined) {
     return null;
   }
-  const workers = await buildFieldLog(publicClient, env.address, numericId, bounty.m);
+  const workers = await buildFieldLog(client, numericId, bounty.m);
   const nowSec = Math.floor(Date.now() / 1000);
   const claimRemaining = status === "Open" ? Math.max(0, Number(bounty.claimDeadline) - nowSec) : null;
   const paid = status === "Paid";

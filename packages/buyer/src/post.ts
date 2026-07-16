@@ -4,6 +4,7 @@ import {
   type Result,
   addressesToBytes,
   buildTargetList,
+  err,
   generateCanaries,
   ok,
   secureRandomBytes,
@@ -24,6 +25,11 @@ export interface PostOptions {
   /// packages/crypto/src/canary.ts).
   realTargets?: Hex[];
   rng?: RandomBytes;
+  /// Called with the secret canary keys and their root BEFORE the bounty is escrowed
+  /// on chain, so the caller can persist them first. The keys are the only way to
+  /// later open or refund the bounty, so losing them locks the escrow permanently; if
+  /// this throws, the post is aborted before any funds move. Optional.
+  persistCanaries?: (draft: { canaryKeys: bigint[]; targetRoot: Hex }) => void;
 }
 
 export interface PostResult {
@@ -49,6 +55,19 @@ export async function postBounty(
 
   const list = buildTargetList(canaries.value, options.realTargets ?? [], rng);
   if (!list.ok) return list;
+
+  // Persist the secret keys before escrowing: if the process dies after the on-chain
+  // post confirms but before the keys are saved, the buyer could never open or refund
+  // the bounty. A persistence failure here aborts the post before any funds move.
+  if (options.persistCanaries !== undefined) {
+    try {
+      options.persistCanaries({ canaryKeys: canaries.value, targetRoot: list.value.tree.root });
+    } catch (caught) {
+      return err(
+        `failed to persist canary keys before posting, aborted: ${caught instanceof Error ? caught.message : String(caught)}`,
+      );
+    }
+  }
 
   const posted = await market.postBounty({
     lo: options.lo,

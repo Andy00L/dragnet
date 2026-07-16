@@ -188,9 +188,14 @@ describe("commit hash and target-list encoding", () => {
     const salt: Hex = `0x${"11".repeat(32)}`;
     const first = commitHash([1n, 2n], worker, salt);
     const second = commitHash([1n, 2n], worker, salt);
-    expect(first).toBe(second);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
     const other = commitHash([1n, 2n], "0x000000000000000000000000000000000000bEEF", salt);
-    expect(first).not.toBe(other);
+    expect(other.ok).toBe(true);
+    if (first.ok && second.ok && other.ok) {
+      expect(first.value).toBe(second.value);
+      expect(first.value).not.toBe(other.value);
+    }
   });
 
   test("target list bytes round-trip", () => {

@@ -8,6 +8,11 @@ export interface DragnetConfig {
   chain: Chain;
   rpcUrl: string;
   marketAddress: Address;
+  /// Block the market was deployed at, used as the floor for event pagination.
+  /// Public RPCs (Monad testnet) cap eth_getLogs to a 100-block range, so event
+  /// scans page from here to head instead of from "earliest". 0 when unset (fine
+  /// for a fresh local anvil; set DRAGNET_DEPLOY_BLOCK for a public deployment).
+  deployBlock: bigint;
   /// Present only when PRIVATE_KEY is set; required for write operations.
   account: PrivateKeyAccount | undefined;
 }
@@ -40,6 +45,19 @@ export function loadConfig(env: Env = process.env): Result<DragnetConfig> {
     return err(`DRAGNET_MARKET must be a deployed contract address; got "${marketAddress ?? ""}"`);
   }
 
+  let deployBlock = 0n;
+  const deployBlockRaw = env.DRAGNET_DEPLOY_BLOCK;
+  if (deployBlockRaw !== undefined && deployBlockRaw.length > 0) {
+    try {
+      deployBlock = BigInt(deployBlockRaw);
+    } catch {
+      return err(`DRAGNET_DEPLOY_BLOCK must be an integer block number; got "${deployBlockRaw}"`);
+    }
+    if (deployBlock < 0n) {
+      return err(`DRAGNET_DEPLOY_BLOCK must not be negative; got "${deployBlockRaw}"`);
+    }
+  }
+
   let account: PrivateKeyAccount | undefined;
   const privateKey = env.PRIVATE_KEY;
   if (privateKey !== undefined && privateKey.length > 0) {
@@ -49,5 +67,5 @@ export function loadConfig(env: Env = process.env): Result<DragnetConfig> {
     account = privateKeyToAccount(privateKey);
   }
 
-  return ok({ chainKey, chain, rpcUrl, marketAddress, account });
+  return ok({ chainKey, chain, rpcUrl, marketAddress, deployBlock, account });
 }

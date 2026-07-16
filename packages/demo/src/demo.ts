@@ -44,6 +44,8 @@ export async function runDemo(): Promise<void> {
       chain: anvilLocal,
       rpcUrl: anvil.rpcUrl,
       marketAddress,
+      // Fresh anvil starts at block 0, so paging events from 0 is cheap here.
+      deployBlock: 0n,
       account: privateKeyToAccount(privateKey),
     });
 

@@ -50,12 +50,26 @@ if [ -z "$ADDRESS" ]; then
   exit 1
 fi
 
-# Wire the address into .env (for the CLI packages) ...
-if grep -q '^DRAGNET_MARKET=' "$ENV_FILE"; then
-  perl -0pi -e "s/^DRAGNET_MARKET=.*/DRAGNET_MARKET=$ADDRESS/m" "$ENV_FILE"
-else
-  printf 'DRAGNET_MARKET=%s\n' "$ADDRESS" >> "$ENV_FILE"
+# The deploy block is the event-pagination floor: public RPCs (Monad testnet) cap
+# eth_getLogs to a 100-block range, so scans page from here rather than "earliest".
+DEPLOY_BLOCK="$(node -e "const run=require('$ARTIFACT'); const rc=(run.receipts||[])[0]; process.stdout.write(rc&&rc.blockNumber?String(parseInt(rc.blockNumber,16)):'')")"
+if [ -z "$DEPLOY_BLOCK" ]; then
+  echo "[deploy-market] warning: could not read deploy block; defaulting to 0" >&2
+  DEPLOY_BLOCK=0
 fi
+
+set_env_var() {
+  local key="$1" value="$2"
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    perl -0pi -e "s/^${key}=.*/${key}=${value}/m" "$ENV_FILE"
+  else
+    printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+# Wire the address and deploy block into .env (for the CLI packages) ...
+set_env_var DRAGNET_MARKET "$ADDRESS"
+set_env_var DRAGNET_DEPLOY_BLOCK "$DEPLOY_BLOCK"
 
 # ... and into apps/web/.env.local (gitignored) so a local web build reads live.
 WEB_ENV="$ROOT/apps/web/.env.local"
@@ -64,12 +78,14 @@ cat > "$WEB_ENV" <<EOF
 NEXT_PUBLIC_DRAGNET_MARKET=$ADDRESS
 NEXT_PUBLIC_DRAGNET_CHAIN=$CHAIN_KEY
 NEXT_PUBLIC_DRAGNET_RPC_URL=$RPC_URL
+NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK=$DEPLOY_BLOCK
 EOF
 
 echo ""
-echo "[deploy-market] DragnetMarket deployed at: $ADDRESS"
-echo "[deploy-market] wrote DRAGNET_MARKET to .env and apps/web/.env.local"
+echo "[deploy-market] DragnetMarket deployed at: $ADDRESS (block $DEPLOY_BLOCK)"
+echo "[deploy-market] wrote DRAGNET_MARKET + DRAGNET_DEPLOY_BLOCK to .env and apps/web/.env.local"
 echo ""
-echo "Set this in Vercel (Project Settings -> Environment Variables), then redeploy:"
-echo "  NEXT_PUBLIC_DRAGNET_MARKET = $ADDRESS"
-echo "  NEXT_PUBLIC_DRAGNET_CHAIN  = $CHAIN_KEY"
+echo "Set these in Vercel (Project Settings -> Environment Variables), then redeploy:"
+echo "  NEXT_PUBLIC_DRAGNET_MARKET       = $ADDRESS"
+echo "  NEXT_PUBLIC_DRAGNET_CHAIN        = $CHAIN_KEY"
+echo "  NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK = $DEPLOY_BLOCK"
