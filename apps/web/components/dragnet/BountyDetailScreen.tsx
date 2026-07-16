@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { TopRail } from "./TopRail";
+import { BountyLifecycle } from "./BountyLifecycle";
 import { statusColor, palette } from "@/lib/tokens";
 import { formatBound, groupDigits } from "@/lib/format";
 import type { BountyDetail, DataSource } from "@/lib/records";
@@ -249,6 +250,12 @@ export function BountyDetailScreen({ detail, source }: { detail: BountyDetail; s
                 </div>
               )}
             </div>
+
+            {/* Lifecycle actions for the connected wallet (reclaim balance, open as
+                buyer, slash an abandoned bounty). Renders only in real mode and only
+                when an action applies; otherwise it is nothing and the layout is
+                unchanged. */}
+            <BountyLifecycle bountyId={detail.id} />
 
             <div style={{ marginTop: "auto" }}>
               {detail.status === "Open" ? (
