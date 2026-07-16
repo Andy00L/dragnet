@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { type Address, type Hex, toHex } from "viem";
+import { type Address, type Hex, isHex, toHex } from "viem";
 import { MarketClient, loadConfig } from "@dragnet/sdk";
 import { runWorker } from "./worker";
 
@@ -33,10 +33,12 @@ function parseArgs(argv: string[]): { ok: true; value: ParsedArgs } | { ok: fals
       skipFraction = parsed;
     } else if (token === "--salt") {
       const next = argv[++index];
-      if (next === undefined || !next.startsWith("0x")) {
-        return { ok: false, error: "--salt requires a 0x-prefixed value" };
+      // Validate the full 32-byte hex here, not just the 0x prefix: an invalid salt
+      // otherwise crashes commitHash only after the (potentially multi-hour) scan.
+      if (next === undefined || !isHex(next) || next.length !== 66) {
+        return { ok: false, error: "--salt requires a 32-byte 0x-prefixed hex value" };
       }
-      salt = next as Hex;
+      salt = next;
     } else {
       positional.push(token);
     }
@@ -134,4 +136,7 @@ async function main(): Promise<void> {
   await runScan(argv);
 }
 
-void main();
+main().catch((error: unknown) => {
+  console.error(`[dragnet-scan] ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+});
