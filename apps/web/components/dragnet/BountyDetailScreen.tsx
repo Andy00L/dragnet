@@ -34,6 +34,8 @@ function frontierKey(lo: bigint, hi: bigint, coverage: number): string {
 function useCountdown(initialSeconds: number | null): string | null {
   const [remaining, setRemaining] = useState(initialSeconds);
   useEffect(() => {
+    // Sync with the browser's timer (an external system React does not own): tick the
+    // remaining seconds once a second. Cleanup clears the interval on unmount.
     if (initialSeconds === null) {
       return;
     }

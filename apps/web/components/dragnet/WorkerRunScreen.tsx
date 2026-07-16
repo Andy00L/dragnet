@@ -59,6 +59,7 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
   const [progress, setProgress] = useState(0);
   const [payoutDisplay, setPayoutDisplay] = useState("0.000");
   const [withdrawn, setWithdrawn] = useState(false);
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
 
   // Real-mode state. In demo mode these keep their demo defaults / stay null.
   const [realError, setRealError] = useState<string | null>(null);
@@ -237,12 +238,20 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
       setWithdrawn(true);
       return;
     }
+    // Guard against a double-click: a second withdraw simulates against the same
+    // balance and reverts NothingToWithdraw, and its late error would overwrite the
+    // successful first withdrawal's state.
+    if (isWithdrawing) {
+      return;
+    }
     const provider = typeof window !== "undefined" ? window.ethereum : undefined;
     if (config === null || wallet.address === null || provider === undefined || !isAddress(wallet.address)) {
       setRealError("connect a wallet to withdraw");
       return;
     }
+    setIsWithdrawing(true);
     const result = await withdrawPayout(provider, wallet.address, config);
+    setIsWithdrawing(false);
     if (result.ok) {
       setWithdrawTx(result.value);
       setWithdrawn(true);
@@ -258,6 +267,7 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
     setProgress(0);
     setPayoutDisplay("0.000");
     setWithdrawn(false);
+    setIsWithdrawing(false);
     setRealError(null);
     setFoundReal(null);
     setWithdrawTx(null);
@@ -357,8 +367,8 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
             </p>
           </div>
           <div role="group" aria-label="Sweep mode" style={{ display: "inline-flex", gap: 3, background: palette.well, border: `1px solid ${palette.edge}`, borderRadius: 6, padding: 3, flex: "none" }}>
-            <button type="button" className="mode-btn" onClick={() => resetTo("full")} style={{ color: !skipMode ? palette.accent : palette.muted, fontWeight: !skipMode ? 600 : 400, background: !skipMode ? palette.surface : "transparent", boxShadow: !skipMode ? "inset 0 1px 0 var(--highlight)" : "none" }}>Sweep the full range</button>
-            <button type="button" className="mode-btn" onClick={() => resetTo("skip")} style={{ color: skipMode ? palette.accent : palette.muted, fontWeight: skipMode ? 600 : 400, background: skipMode ? palette.surface : "transparent", boxShadow: skipMode ? "inset 0 1px 0 var(--highlight)" : "none" }}>Skip the top 15%</button>
+            <button type="button" className="mode-btn" disabled={running} onClick={() => resetTo("full")} style={{ color: !skipMode ? palette.accent : palette.muted, fontWeight: !skipMode ? 600 : 400, background: !skipMode ? palette.surface : "transparent", boxShadow: !skipMode ? "inset 0 1px 0 var(--highlight)" : "none" }}>Sweep the full range</button>
+            <button type="button" className="mode-btn" disabled={running} onClick={() => resetTo("skip")} style={{ color: skipMode ? palette.accent : palette.muted, fontWeight: skipMode ? 600 : 400, background: skipMode ? palette.surface : "transparent", boxShadow: skipMode ? "inset 0 1px 0 var(--highlight)" : "none" }}>Skip the top 15%</button>
           </div>
         </div>
 
@@ -490,7 +500,7 @@ export function WorkerRunScreen({ context }: { context: RunContext }) {
               ) : running ? (
                 <button type="button" className="btn-primary" style={{ width: "100%" }} disabled>{runningCta}</button>
               ) : phase === "paid" && !withdrawn ? (
-                <button type="button" className="btn-primary" style={{ width: "100%" }} onClick={() => void onWithdraw()}>Withdraw</button>
+                <button type="button" className="btn-primary" style={{ width: "100%" }} disabled={isWithdrawing} onClick={() => void onWithdraw()}>{isWithdrawing ? "Withdrawing…" : "Withdraw"}</button>
               ) : phase === "paid" && withdrawn ? (
                 <p className="mono small" style={{ color: palette.ink, margin: 0, padding: "12px 0" }}>
                   withdrawn to {workerAddr} ✓{withdrawTx !== null ? ` (${truncateHex(withdrawTx, 6, 4)})` : ""}
