@@ -1,6 +1,7 @@
 import type { Address, Hex } from "viem";
 import { buildReveal, err, ok, targetListMatchesRoot } from "@dragnet/crypto";
 import type { Result } from "@dragnet/crypto";
+import { BountyStatus } from "@dragnet/sdk";
 import type { ClientMarketConfig } from "./client-config";
 import { ensureChain } from "./post-onchain";
 import type { Eip1193Provider } from "./post-onchain";
@@ -30,6 +31,17 @@ export async function openBountyOnChain(
   const bounty = await market.getBounty(bountyId);
   if (!bounty.ok) {
     return bounty;
+  }
+  // getBounty returns a zeroed struct for an unknown id instead of reverting
+  // (sourceRef: contracts/src/DragnetMarket.sol getBounty), and a status-None bounty
+  // has no BountyPosted event, so without this guard fetchTargetList would page the
+  // whole [deployBlock, head] range before failing. Non-open states fail here too,
+  // saving the scan and the reveal build the contract would reject anyway.
+  if (bounty.value.status === BountyStatus.None) {
+    return err(`bounty ${bountyId} does not exist`);
+  }
+  if (bounty.value.status !== BountyStatus.Open) {
+    return err(`bounty ${bountyId} is not open; only an open bounty can be reclaimed`);
   }
   const addresses = await market.fetchTargetList(bountyId);
   if (!addresses.ok) {
