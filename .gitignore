@@ -25,6 +25,9 @@ ui-design/
 # Scratch and throwaway
 .scratch/
 
+# Local agent standards kit (per-machine tooling, not part of the project)
+.claude/
+
 # OS / editor / Windows ADS artifacts
 .DS_Store
 *:Zone.Identifier
