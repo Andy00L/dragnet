@@ -4,6 +4,7 @@ import {
   type Hex,
   type Log,
   type PublicClient,
+  type TransactionReceipt,
   type WalletClient,
   BaseError,
   ContractFunctionRevertedError,
@@ -131,6 +132,20 @@ export class MarketClient {
     }
   }
 
+  /// Wait for a sent transaction's receipt and reject a mined-but-reverted one.
+  /// viem's waitForTransactionReceipt resolves for a reverted transaction (it only
+  /// throws on timeout/not-found), so without this check a transaction that passed
+  /// local simulation but reverted once mined (for example a reveal that lost the
+  /// race after another worker was paid) would be reported as success. Thrown here
+  /// so guarded() maps it to a Result.err. sourceRef: viem waitForTransactionReceipt.
+  private async confirm(txHash: Hex): Promise<TransactionReceipt> {
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+    if (receipt.status !== "success") {
+      throw new Error(`transaction reverted on chain (tx ${txHash})`);
+    }
+    return receipt;
+  }
+
   async bountyCount(): Promise<bigint> {
     return this.publicClient.readContract({ ...this.base(), functionName: "bountyCount" });
   }
@@ -198,9 +213,11 @@ export class MarketClient {
     return undefined;
   }
 
-  /// Fetch the published target list (hash160 addresses) from the BountyPosted event.
-  async fetchTargetList(bountyId: bigint): Promise<Result<Hex[]>> {
-    const found = await this.findLatestPaged((fromBlock, toBlock) =>
+  /// Find the BountyPosted event for one bounty, scanning newest-first so a recent
+  /// post resolves in the first window. Shared by fetchTargetList and the field-log
+  /// scan, which both need the post (its list, and the block it landed in).
+  private async findBountyPosted(bountyId: bigint) {
+    return this.findLatestPaged((fromBlock, toBlock) =>
       this.publicClient.getContractEvents({
         ...this.base(),
         eventName: "BountyPosted",
@@ -209,6 +226,11 @@ export class MarketClient {
         toBlock,
       }),
     );
+  }
+
+  /// Fetch the published target list (hash160 addresses) from the BountyPosted event.
+  async fetchTargetList(bountyId: bigint): Promise<Result<Hex[]>> {
+    const found = await this.findBountyPosted(bountyId);
     if (found === undefined || found.args.targetList === undefined) {
       return err(`no BountyPosted event found for bounty ${bountyId}`);
     }
@@ -221,8 +243,17 @@ export class MarketClient {
   /// the raw logs are decoded locally, so extra event types cost no requests.
   async fetchFieldEvents(bountyId: bigint): Promise<WorkerEvent[]> {
     const head = await this.publicClient.getBlockNumber();
+    // A bounty's Committed/Paid/Slashed events cannot predate its post, so start the
+    // scan at the BountyPosted block instead of deployBlock. This keeps the scan
+    // bounded to the bounty's own lifetime rather than growing with total chain
+    // history, which otherwise makes every field-log read linearly slower over time.
+    const posted = await this.findBountyPosted(bountyId);
+    const startBlock =
+      posted?.blockNumber !== undefined && posted.blockNumber !== null
+        ? posted.blockNumber
+        : this.deployBlock;
     const rawLogs: Log[] = [];
-    let fromBlock = this.deployBlock;
+    let fromBlock = startBlock;
     while (fromBlock <= head) {
       const toBlock = fromBlock + LOG_WINDOW - 1n > head ? head : fromBlock + LOG_WINDOW - 1n;
       const logs = await this.publicClient.getLogs({ address: this.address, fromBlock, toBlock });
@@ -262,7 +293,7 @@ export class MarketClient {
 
   async postBounty(params: PostBountyParams): Promise<Result<{ bountyId: bigint; txHash: Hex }>> {
     return this.guarded(async (wallet, account) => {
-      const { request, result } = await this.publicClient.simulateContract({
+      const { request } = await this.publicClient.simulateContract({
         ...this.base(),
         account,
         functionName: "postBounty",
@@ -280,10 +311,13 @@ export class MarketClient {
         value: params.payout + params.bond,
       });
       const txHash = await wallet.writeContract(request);
-      const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      const receipt = await this.confirm(txHash);
       // The authoritative id is the one the contract assigned, read from the
       // BountyPosted event. The simulated `result` reflects pre-send state and would
-      // be wrong if another postBounty is mined between simulate and send.
+      // be wrong if another postBounty is mined between simulate and send. confirm()
+      // has already rejected a reverted receipt, so a successful post must carry the
+      // event; its absence means an unexpected ABI/address mismatch, surfaced as an
+      // error rather than silently trusting the stale simulate value.
       const marketLogs = receipt.logs.filter(
         (entry) => entry.address.toLowerCase() === this.address.toLowerCase(),
       );
@@ -293,8 +327,10 @@ export class MarketClient {
         logs: marketLogs,
       });
       const emitted = posted[0];
-      const bountyId = emitted !== undefined ? emitted.args.bountyId : result;
-      return { bountyId, txHash };
+      if (emitted === undefined) {
+        throw new Error(`postBounty mined (tx ${txHash}) but emitted no BountyPosted event`);
+      }
+      return { bountyId: emitted.args.bountyId, txHash };
     });
   }
 
@@ -307,7 +343,7 @@ export class MarketClient {
         args: [bountyId, commitHash],
       });
       const txHash = await wallet.writeContract(request);
-      await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      await this.confirm(txHash);
       return txHash;
     });
   }
@@ -321,7 +357,7 @@ export class MarketClient {
         args: [bountyId, payload.keys, payload.px, payload.py, payload.proofs, salt],
       });
       const txHash = await wallet.writeContract(request);
-      await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      await this.confirm(txHash);
       return txHash;
     });
   }
@@ -335,7 +371,7 @@ export class MarketClient {
         args: [bountyId, payload.keys, payload.px, payload.py, payload.proofs],
       });
       const txHash = await wallet.writeContract(request);
-      await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      await this.confirm(txHash);
       return txHash;
     });
   }
@@ -349,7 +385,7 @@ export class MarketClient {
         args: [bountyId],
       });
       const txHash = await wallet.writeContract(request);
-      await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      await this.confirm(txHash);
       return txHash;
     });
   }
@@ -362,7 +398,7 @@ export class MarketClient {
         functionName: "withdraw",
       });
       const txHash = await wallet.writeContract(request);
-      await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      await this.confirm(txHash);
       return txHash;
     });
   }
