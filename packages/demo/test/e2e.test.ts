@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type Address, type Hex, createTestClient, http, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { type RandomBytes } from "@dragnet/crypto";
+import { type RandomBytes, type Result } from "@dragnet/crypto";
 import { BountyStatus, type DragnetConfig, MarketClient, anvilLocal } from "@dragnet/sdk";
 import { openBounty as buyerOpen, postBounty as buyerPost } from "@dragnet/buyer";
 import { runWorker } from "@dragnet/scanner";
@@ -21,6 +21,16 @@ const HI = 6000n;
 const M = 4;
 const PAYOUT = parseEther("1");
 const BOND = parseEther("1");
+
+// Assert a read Result succeeded and return its value; the SDK's read methods now
+// return Result, so a failing RPC fails the test loudly here instead of throwing deep.
+function expectOk<T>(result: Result<T>): T {
+  expect(result.ok).toBe(true);
+  if (!result.ok) {
+    throw new Error(result.error);
+  }
+  return result.value;
+}
 
 function seededRandomBytes(seed: number): RandomBytes {
   let state = BigInt(seed) & ((1n << 64n) - 1n);
@@ -88,7 +98,7 @@ describe("Dragnet end to end on a live contract", () => {
       if (!posted.ok) return;
       const bountyId = posted.value.bountyId;
 
-      const buyerPendingBefore = await buyerMarket.pendingWithdrawals(buyerAddress);
+      const buyerPendingBefore = expectOk(await buyerMarket.pendingWithdrawals(buyerAddress));
 
       const honestMarket = marketFor(KEY_HONEST);
       const outcome = await runWorker(honestMarket, honestAddress, {
@@ -103,11 +113,11 @@ describe("Dragnet end to end on a live contract", () => {
       expect(outcome.paid).toBe(true);
       expect(outcome.withdrawTx).toBeDefined();
 
-      const bounty = await honestMarket.getBounty(bountyId);
+      const bounty = expectOk(await honestMarket.getBounty(bountyId));
       expect(bounty.status).toBe(BountyStatus.Paid);
       expect(bounty.winner.toLowerCase()).toBe(honestAddress.toLowerCase());
 
-      const buyerPendingAfter = await buyerMarket.pendingWithdrawals(buyerAddress);
+      const buyerPendingAfter = expectOk(await buyerMarket.pendingWithdrawals(buyerAddress));
       expect(buyerPendingAfter - buyerPendingBefore).toBe(BOND);
     },
     60_000,
@@ -139,7 +149,7 @@ describe("Dragnet end to end on a live contract", () => {
       );
 
       const cheatMarket = marketFor(KEY_CHEAT);
-      const cheatPendingBefore = await cheatMarket.pendingWithdrawals(cheatAddress);
+      const cheatPendingBefore = expectOk(await cheatMarket.pendingWithdrawals(cheatAddress));
 
       const outcome = await runWorker(cheatMarket, cheatAddress, {
         bountyId,
@@ -154,10 +164,10 @@ describe("Dragnet end to end on a live contract", () => {
       expect(outcome.paid).toBe(false);
       expect(outcome.revertReason).toBe("LengthMismatch");
 
-      const cheatPendingAfter = await cheatMarket.pendingWithdrawals(cheatAddress);
+      const cheatPendingAfter = expectOk(await cheatMarket.pendingWithdrawals(cheatAddress));
       expect(cheatPendingAfter - cheatPendingBefore).toBe(0n);
 
-      const bounty = await cheatMarket.getBounty(bountyId);
+      const bounty = expectOk(await cheatMarket.getBounty(bountyId));
       expect(bounty.status).toBe(BountyStatus.Open);
     },
     60_000,
@@ -190,14 +200,14 @@ describe("Dragnet end to end on a live contract", () => {
       await testClient.increaseTime({ seconds: 120 });
       await testClient.mine({ blocks: 1 });
 
-      const pendingBefore = await buyerMarket.pendingWithdrawals(buyerAddress);
+      const pendingBefore = expectOk(await buyerMarket.pendingWithdrawals(buyerAddress));
       const opened = await buyerOpen(buyerMarket, bountyId, posted.value.canaryKeys);
       expect(opened.ok).toBe(true);
 
-      const bounty = await buyerMarket.getBounty(bountyId);
+      const bounty = expectOk(await buyerMarket.getBounty(bountyId));
       expect(bounty.status).toBe(BountyStatus.Refunded);
 
-      const pendingAfter = await buyerMarket.pendingWithdrawals(buyerAddress);
+      const pendingAfter = expectOk(await buyerMarket.pendingWithdrawals(buyerAddress));
       expect(pendingAfter - pendingBefore).toBe(PAYOUT + BOND);
     },
     60_000,
@@ -248,15 +258,15 @@ describe("Dragnet end to end on a live contract", () => {
       await testClient.increaseTime({ seconds: 7300 });
       await testClient.mine({ blocks: 1 });
 
-      const cheatPendingBefore = await cheatMarket.pendingWithdrawals(cheatAddress);
+      const cheatPendingBefore = expectOk(await cheatMarket.pendingWithdrawals(cheatAddress));
       const slashed = await cheatMarket.slash(bountyId);
       expect(slashed.ok).toBe(true);
 
-      const bounty = await cheatMarket.getBounty(bountyId);
+      const bounty = expectOk(await cheatMarket.getBounty(bountyId));
       expect(bounty.status).toBe(BountyStatus.Slashed);
       expect(bounty.winner.toLowerCase()).toBe(cheatAddress.toLowerCase());
 
-      const cheatPendingAfter = await cheatMarket.pendingWithdrawals(cheatAddress);
+      const cheatPendingAfter = expectOk(await cheatMarket.pendingWithdrawals(cheatAddress));
       expect(cheatPendingAfter - cheatPendingBefore).toBe(PAYOUT + BOND);
     },
     60_000,

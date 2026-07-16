@@ -146,33 +146,45 @@ export class MarketClient {
     return receipt;
   }
 
-  async bountyCount(): Promise<bigint> {
-    return this.publicClient.readContract({ ...this.base(), functionName: "bountyCount" });
+  /// Wrap a read (an eth_call or getLogs) so an RPC failure, timeout, or the
+  /// documented Monad rate limit surfaces as a Result.err instead of a thrown
+  /// rejection. Mirrors guarded() on the write side, so every SDK method fails the
+  /// same, actionable way rather than crashing the caller.
+  private async guardedRead<T>(read: () => Promise<T>): Promise<Result<T>> {
+    try {
+      return ok(await read());
+    } catch (caught) {
+      return err(describeRevert(caught));
+    }
   }
 
-  async getBounty(bountyId: bigint): Promise<OnChainBounty> {
-    return this.publicClient.readContract({
-      ...this.base(),
-      functionName: "getBounty",
-      args: [bountyId],
+  async bountyCount(): Promise<Result<bigint>> {
+    return this.guardedRead(() =>
+      this.publicClient.readContract({ ...this.base(), functionName: "bountyCount" }),
+    );
+  }
+
+  async getBounty(bountyId: bigint): Promise<Result<OnChainBounty>> {
+    return this.guardedRead(() =>
+      this.publicClient.readContract({ ...this.base(), functionName: "getBounty", args: [bountyId] }),
+    );
+  }
+
+  async pendingWithdrawals(account: Address): Promise<Result<bigint>> {
+    return this.guardedRead(() =>
+      this.publicClient.readContract({
+        ...this.base(),
+        functionName: "pendingWithdrawals",
+        args: [account],
+      }),
+    );
+  }
+
+  async getTransactionBlock(hash: Hex): Promise<Result<bigint>> {
+    return this.guardedRead(async () => {
+      const receipt = await this.publicClient.getTransactionReceipt({ hash });
+      return receipt.blockNumber;
     });
-  }
-
-  async pendingWithdrawals(account: Address): Promise<bigint> {
-    return this.publicClient.readContract({
-      ...this.base(),
-      functionName: "pendingWithdrawals",
-      args: [account],
-    });
-  }
-
-  async getBlockNumber(): Promise<bigint> {
-    return this.publicClient.getBlockNumber();
-  }
-
-  async getTransactionBlock(hash: Hex): Promise<bigint> {
-    const receipt = await this.publicClient.getTransactionReceipt({ hash });
-    return receipt.blockNumber;
   }
 
   /// Poll until the chain advances past `block`. The reveal must land in a strictly
@@ -180,10 +192,11 @@ export class MarketClient {
   async waitForBlockAfter(block: bigint, pollMs = 500, maxWaitMs = 60_000): Promise<Result<bigint>> {
     const deadline = Date.now() + maxWaitMs;
     for (;;) {
-      const current = await this.getBlockNumber();
-      if (current > block) return ok(current);
+      const current = await this.guardedRead(() => this.publicClient.getBlockNumber());
+      if (!current.ok) return current;
+      if (current.value > block) return ok(current.value);
       if (Date.now() > deadline) {
-        return err(`timed out waiting for a block after ${block} (still at ${current})`);
+        return err(`timed out waiting for a block after ${block} (still at ${current.value})`);
       }
       await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
@@ -230,18 +243,25 @@ export class MarketClient {
 
   /// Fetch the published target list (hash160 addresses) from the BountyPosted event.
   async fetchTargetList(bountyId: bigint): Promise<Result<Hex[]>> {
-    const found = await this.findBountyPosted(bountyId);
-    if (found === undefined || found.args.targetList === undefined) {
+    const found = await this.guardedRead(() => this.findBountyPosted(bountyId));
+    if (!found.ok) return found;
+    if (found.value === undefined || found.value.args.targetList === undefined) {
       return err(`no BountyPosted event found for bounty ${bountyId}`);
     }
-    return bytesToAddresses(found.args.targetList);
+    return bytesToAddresses(found.value.args.targetList);
   }
 
   /// Fetch and flatten the Committed, Paid, and Slashed events for a bounty into a
   /// single chronologically sorted list (the field log source). One getLogs per
   /// window (sequential, throttled) keeps the scan under the RPC's request-rate cap;
   /// the raw logs are decoded locally, so extra event types cost no requests.
-  async fetchFieldEvents(bountyId: bigint): Promise<WorkerEvent[]> {
+  async fetchFieldEvents(bountyId: bigint): Promise<Result<WorkerEvent[]>> {
+    return this.guardedRead(() => this.readFieldEvents(bountyId));
+  }
+
+  /// The throwing body of fetchFieldEvents, wrapped by guardedRead above so an RPC
+  /// failure mid-scan becomes a Result.err rather than an unhandled rejection.
+  private async readFieldEvents(bountyId: bigint): Promise<WorkerEvent[]> {
     const head = await this.publicClient.getBlockNumber();
     // A bounty's Committed/Paid/Slashed events cannot predate its post, so start the
     // scan at the BountyPosted block instead of deployBlock. This keeps the scan

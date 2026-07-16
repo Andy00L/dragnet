@@ -10,13 +10,14 @@ export async function openBounty(
   canaryKeys: bigint[],
 ): Promise<Result<Hex>> {
   const bounty = await market.getBounty(bountyId);
+  if (!bounty.ok) return bounty;
   const addresses = await market.fetchTargetList(bountyId);
   if (!addresses.ok) return addresses;
 
   // Guard against a list that does not match the committed root (the same check the
   // worker makes), so a corrupted event read fails clearly here instead of as an
   // opaque on-chain NotListed revert.
-  if (!targetListMatchesRoot(addresses.value, bounty.targetRoot)) {
+  if (!targetListMatchesRoot(addresses.value, bounty.value.targetRoot)) {
     return err(`bounty ${bountyId} target list does not hash to its on-chain root`);
   }
 

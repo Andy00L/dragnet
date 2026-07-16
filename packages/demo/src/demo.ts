@@ -104,10 +104,18 @@ export async function runDemo(): Promise<void> {
 
     heading("Result");
     const buyerBond = await buyerMarket.pendingWithdrawals(buyerAddress);
+    if (!buyerBond.ok) {
+      console.error(`[runDemo] could not read the buyer balance: ${buyerBond.error}`);
+      return;
+    }
     const finalBounty = await buyerMarket.getBounty(bountyId);
+    if (!finalBounty.ok) {
+      console.error(`[runDemo] could not read the final bounty: ${finalBounty.error}`);
+      return;
+    }
     // The paid worker auto-withdrew to its wallet, so the payout is reported from
     // the settled bounty, not from the (now-zero) pending balance.
-    const honestAPayout = honestA.paid ? formatEther(finalBounty.payout) : "0";
+    const honestAPayout = honestA.paid ? formatEther(finalBounty.value.payout) : "0";
 
     console.log(
       `cheat worker    found ${cheat.found}/${M}, revert=${cheat.revertReason ?? "none"}, earned 0 MON`,
@@ -118,8 +126,8 @@ export async function runDemo(): Promise<void> {
     console.log(
       `honest worker B found ${honestB.found}/${M}, arrived after coverage was delivered, earned 0 MON`,
     );
-    console.log(`buyer bond returned (claimable): ${formatEther(buyerBond)} MON`);
-    console.log(`bounty status: ${BountyStatus[finalBounty.status]}, winner ${finalBounty.winner}`);
+    console.log(`buyer bond returned (claimable): ${formatEther(buyerBond.value)} MON`);
+    console.log(`bounty status: ${BountyStatus[finalBounty.value.status]}, winner ${finalBounty.value.winner}`);
     console.log("\nExhaustive search proven over secp256k1, no ZK. The cheat earned zero.");
   } finally {
     anvil.stop();

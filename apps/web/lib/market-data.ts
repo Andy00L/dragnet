@@ -1,7 +1,7 @@
 import { createPublicClient, http, isAddress } from "viem";
 import type { Address, Chain, PublicClient } from "viem";
 import { BountyStatus, MarketClient, chainForKey } from "@dragnet/sdk";
-import type { ChainKey, WorkerEvent } from "@dragnet/sdk";
+import type { ChainKey } from "@dragnet/sdk";
 import { formatMon, formatRange, truncateHex } from "./format";
 import { SAMPLE_ROWS, sampleDetailFor } from "./records";
 import type { BountyDetail, DataSource, LedgerRow, WorkerLogEntry } from "./records";
@@ -112,7 +112,12 @@ export async function getLedger(): Promise<LedgerResult> {
   }
   const client = clientFor(env, publicClientFor(env));
   const count = await client.bountyCount();
-  const total = Number(count);
+  if (!count.ok) {
+    // Surface an essential-read failure to the route's error boundary intentionally,
+    // instead of a raw unhandled rejection from deep in the SDK.
+    throw new Error(`could not read the market: ${count.error}`);
+  }
+  const total = Number(count.value);
   const first = Math.max(1, total - LEDGER_LIMIT + 1);
   if (total > LEDGER_LIMIT) {
     console.warn(
@@ -122,7 +127,12 @@ export async function getLedger(): Promise<LedgerResult> {
   const rows: LedgerRow[] = [];
   for (let id = total; id >= first; id--) {
     const bounty = await client.getBounty(BigInt(id));
-    const row = rowFromChain(BigInt(id), bounty);
+    if (!bounty.ok) {
+      // One unreadable row should not blank the whole ledger; skip it and note why.
+      console.warn(`[getLedger] skipping bounty ${id}: ${bounty.error}`);
+      continue;
+    }
+    const row = rowFromChain(BigInt(id), bounty.value);
     if (row !== null) {
       rows.push(row);
     }
@@ -193,13 +203,14 @@ function fieldEntryFor(record: WorkerRecord, m: number): WorkerLogEntry {
 // log rather than failing the page, and the reason is logged (never any secret).
 // Workers appear in the order they first commit, with the terminal state folded in.
 async function buildFieldLog(client: MarketClient, bountyId: bigint, m: number): Promise<WorkerLogEntry[]> {
-  let events: WorkerEvent[];
-  try {
-    events = await client.fetchFieldEvents(bountyId);
-  } catch (caught) {
-    console.warn(`[buildFieldLog] could not read events for bounty ${bountyId}: ${String(caught)}`);
+  // Best-effort: an RPC failure yields an empty log rather than failing the page (the
+  // field log is supplementary to the bounty itself), and the reason is logged.
+  const eventsResult = await client.fetchFieldEvents(bountyId);
+  if (!eventsResult.ok) {
+    console.warn(`[buildFieldLog] could not read events for bounty ${bountyId}: ${eventsResult.error}`);
     return [];
   }
+  const events = eventsResult.value;
 
   // Map preserves first-insertion order, so a worker keeps its commit position
   // while a later Paid/Slashed overwrites its state in place.
@@ -237,10 +248,17 @@ export async function getBountyDetail(id: string): Promise<DetailResult | null> 
   const publicClient = publicClientFor(env);
   const client = clientFor(env, publicClient);
   const count = await client.bountyCount();
-  if (numericId < 1n || numericId > count) {
+  if (!count.ok) {
+    throw new Error(`could not read the market: ${count.error}`);
+  }
+  if (numericId < 1n || numericId > count.value) {
     return null;
   }
-  const bounty = await client.getBounty(numericId);
+  const bountyResult = await client.getBounty(numericId);
+  if (!bountyResult.ok) {
+    throw new Error(`could not read bounty ${id}: ${bountyResult.error}`);
+  }
+  const bounty = bountyResult.value;
   const status = STATUS_NAME[bounty.status];
   if (status === undefined) {
     return null;
