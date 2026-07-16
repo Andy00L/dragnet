@@ -18,7 +18,9 @@ export function isValidKey(key: bigint): boolean {
 /// The public-key point key*G, or an error for out-of-range keys.
 export function pointForKey(key: bigint): Result<AffinePoint> {
   if (!isValidKey(key)) {
-    return err(`private key out of range [1, N): ${key}`);
+    // Never echo the key itself: canary and worker keys are secret (SKILL_GENERAL
+    // section 6). The caller knows which key it passed.
+    return err("private key out of range [1, N)");
   }
   const point = secp256k1.ProjectivePoint.BASE.multiply(key);
   const affine = point.toAffine();
@@ -28,7 +30,9 @@ export function pointForKey(key: bigint): Result<AffinePoint> {
 /// The 33-byte compressed public key for key*G.
 export function compressedPubkey(key: bigint): Result<Uint8Array> {
   if (!isValidKey(key)) {
-    return err(`private key out of range [1, N): ${key}`);
+    // Never echo the key itself: canary and worker keys are secret (SKILL_GENERAL
+    // section 6). The caller knows which key it passed.
+    return err("private key out of range [1, N)");
   }
   return ok(secp256k1.ProjectivePoint.BASE.multiply(key).toRawBytes(true));
 }

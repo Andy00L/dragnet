@@ -170,7 +170,10 @@ export async function commitAndReveal(
 
   onStage("committing");
   const digest = commitHash(reveal.value.keys, worker, salt);
-  const committed = await market.commit(bountyId, digest);
+  if (!digest.ok) {
+    return digest;
+  }
+  const committed = await market.commit(bountyId, digest.value);
   if (!committed.ok) {
     return committed;
   }

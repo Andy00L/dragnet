@@ -63,8 +63,10 @@ export function generateCanaries(
   if (hi <= lo) {
     return err(`range invalid: hi (${hi}) must exceed lo (${lo})`);
   }
-  if (count < 1) {
-    return err(`count must be at least 1, got ${count}`);
+  if (!Number.isInteger(count) || count < 1) {
+    // A fractional or non-finite count would corrupt the loop bound and the
+    // range-capacity check below, so reject it up front.
+    return err(`count must be a positive integer, got ${count}`);
   }
   const rangeSize = hi - lo + 1n;
   if (rangeSize < BigInt(count)) {

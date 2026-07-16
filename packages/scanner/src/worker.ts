@@ -101,7 +101,11 @@ export async function runWorker(
   }
 
   const digest = commitHash(reveal.value.keys, workerAddress, options.salt);
-  const committed = await market.commit(options.bountyId, digest);
+  if (!digest.ok) {
+    say(`could not build commit: ${digest.error}`);
+    return outcome;
+  }
+  const committed = await market.commit(options.bountyId, digest.value);
   if (!committed.ok) {
     say(`commit failed: ${committed.error}`);
     return outcome;
