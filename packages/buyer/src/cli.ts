@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Hex, isHex, parseEther } from "viem";
 import { MarketClient, loadConfig } from "@dragnet/sdk";
@@ -176,17 +176,22 @@ async function runPost(flags: Map<string, string>): Promise<void> {
     canaryKeys: result.value.canaryKeys.map((key) => key.toString()),
   };
 
-  // Finalize: promote the staging file to bounty-<id>.json. If this fails, the keys
-  // are NOT lost (the on-chain post already confirmed): dump them to stderr and leave
-  // the staging file in place as the recovery copy.
+  // Finalize: write the authoritative bounty-<id>.json (the SavedBounty shape, now that
+  // the bountyId is known), then delete the redundant staging file. If saveSecret throws,
+  // the keys are NOT lost (the on-chain post already confirmed): dump them to stderr and
+  // leave the staging file in place as the recovery copy.
   let path: string;
   try {
     path = saveSecret(record);
     if (stagedAt !== undefined) {
+      // The staging file (pending-<root>.json) was the pre-post recovery copy and holds
+      // an older shape without the bountyId; the authoritative record is now written, so
+      // remove it rather than move it over the good file. Best-effort: a failed delete
+      // leaves a harmless stale staging file and never touches bounty-<id>.json.
       try {
-        renameSync(stagedAt, path);
-      } catch {
         rmSync(stagedAt, { force: true });
+      } catch {
+        // ignore: bounty-<id>.json already holds the authoritative record.
       }
     }
   } catch (caught) {

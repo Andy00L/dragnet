@@ -1,9 +1,9 @@
-import { createPublicClient, createWalletClient, custom, http, toHex } from "viem";
+import { createPublicClient, createWalletClient, custom, toHex } from "viem";
 import type { Account, Address, Hex } from "viem";
 import { buildReveal, commitHash, err, ok, targetListMatchesRoot } from "@dragnet/crypto";
 import type { Result } from "@dragnet/crypto";
 import { scanRange } from "@dragnet/scanner";
-import { BountyStatus, MarketClient } from "@dragnet/sdk";
+import { BountyStatus, MarketClient, dragnetHttpTransport } from "@dragnet/sdk";
 import type { ClientMarketConfig } from "./client-config";
 import { ensureChain } from "./post-onchain";
 import type { Eip1193Provider } from "./post-onchain";
@@ -42,17 +42,14 @@ export interface RunOutcome {
   revertReason?: string;
 }
 
-// Retry budget so an incidental rate-limit (Monad testnet caps requests) recovers.
-const readTransport = (rpcUrl: string) => http(rpcUrl, { retryCount: 6, retryDelay: 300 });
-
 export function readClient(config: ClientMarketConfig): MarketClient {
-  const publicClient = createPublicClient({ chain: config.chain, transport: readTransport(config.rpcUrl) });
+  const publicClient = createPublicClient({ chain: config.chain, transport: dragnetHttpTransport(config.rpcUrl) });
   return new MarketClient(config.marketAddress, publicClient, undefined, undefined, config.deployBlock);
 }
 
 export function writeClient(provider: Eip1193Provider, worker: Address, config: ClientMarketConfig): MarketClient {
   const account: Account = { address: worker, type: "json-rpc" };
-  const publicClient = createPublicClient({ chain: config.chain, transport: readTransport(config.rpcUrl) });
+  const publicClient = createPublicClient({ chain: config.chain, transport: dragnetHttpTransport(config.rpcUrl) });
   const walletClient = createWalletClient({ chain: config.chain, transport: custom(provider), account });
   return new MarketClient(config.marketAddress, publicClient, walletClient, account, config.deployBlock);
 }

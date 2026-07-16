@@ -1,6 +1,6 @@
-import { createPublicClient, http, isAddress } from "viem";
+import { createPublicClient, isAddress } from "viem";
 import type { Address, Chain, PublicClient } from "viem";
-import { BountyStatus, MarketClient, chainForKey } from "@dragnet/sdk";
+import { BountyStatus, MarketClient, chainForKey, dragnetHttpTransport } from "@dragnet/sdk";
 import type { ChainKey } from "@dragnet/sdk";
 import { formatMon, formatRange, truncateHex } from "./format";
 import { SAMPLE_ROWS, sampleDetailFor } from "./records";
@@ -32,15 +32,37 @@ interface MarketEnv {
   deployBlock: bigint;
 }
 
+// A deploy block that resolves to 0 (env unset or malformed) forces every BountyPosted
+// scan to page backward toward genesis whenever a post is not found near the head, slow
+// enough on a live network to time out a render. The CLI config path rejects bad input
+// outright (packages/sdk/src/config.ts); the web app degrades instead of failing, so
+// surface the misconfiguration once per process rather than letting it stay silent.
+let deployBlockWarned = false;
+function warnDeployBlockOnce(reason: string): void {
+  if (deployBlockWarned) {
+    return;
+  }
+  deployBlockWarned = true;
+  console.warn(
+    `[market-data] ${reason}; defaulting to block 0. Set DRAGNET_DEPLOY_BLOCK to the market's deployment block so event scans stay bounded.`,
+  );
+}
+
 function parseDeployBlock(): bigint {
   const raw = process.env.DRAGNET_DEPLOY_BLOCK ?? process.env.NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK;
   if (raw === undefined || raw.length === 0) {
+    warnDeployBlockOnce("DRAGNET_DEPLOY_BLOCK is not set");
     return 0n;
   }
   try {
     const parsed = BigInt(raw);
-    return parsed < 0n ? 0n : parsed;
+    if (parsed < 0n) {
+      warnDeployBlockOnce(`DRAGNET_DEPLOY_BLOCK is negative (${raw})`);
+      return 0n;
+    }
+    return parsed;
   } catch {
+    warnDeployBlockOnce(`DRAGNET_DEPLOY_BLOCK is not a valid integer (${raw})`);
     return 0n;
   }
 }
@@ -63,8 +85,7 @@ function resolveEnv(): MarketEnv | null {
 }
 
 function publicClientFor(env: MarketEnv): PublicClient {
-  // Retry budget so an incidental rate-limit (Monad testnet caps requests) recovers.
-  return createPublicClient({ chain: env.chain, transport: http(env.rpcUrl, { retryCount: 6, retryDelay: 300 }) });
+  return createPublicClient({ chain: env.chain, transport: dragnetHttpTransport(env.rpcUrl) });
 }
 
 function clientFor(env: MarketEnv, publicClient: PublicClient): MarketClient {

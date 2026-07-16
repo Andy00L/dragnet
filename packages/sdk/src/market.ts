@@ -10,12 +10,12 @@ import {
   ContractFunctionRevertedError,
   createPublicClient,
   createWalletClient,
-  http,
   parseEventLogs,
 } from "viem";
 import { type Result, type RevealPayload, bytesToAddresses, err, ok } from "@dragnet/crypto";
 import { dragnetMarketAbi } from "./abi";
 import type { DragnetConfig } from "./config";
+import { dragnetHttpTransport } from "./transport";
 
 export enum BountyStatus {
   None = 0,
@@ -97,9 +97,8 @@ export class MarketClient {
   }
 
   static fromConfig(config: DragnetConfig): MarketClient {
-    // Retry budget so an incidental rate-limit (Monad testnet caps requests) backs
-    // off and recovers instead of surfacing as a hard failure.
-    const transport = http(config.rpcUrl, { retryCount: 6, retryDelay: 300 });
+    // Shared transport with the rate-limit retry budget (see transport.ts).
+    const transport = dragnetHttpTransport(config.rpcUrl);
     const publicClient = createPublicClient({ chain: config.chain, transport });
     const walletClient = config.account
       ? createWalletClient({ chain: config.chain, transport, account: config.account })
@@ -222,6 +221,10 @@ export class MarketClient {
         break;
       }
       toBlock = fromBlock - 1n;
+      // Throttle between windows so a multi-window backward scan stays under the
+      // RPC's request-rate cap (the same reason fetchFieldEvents throttles its
+      // forward loop); without this the scan bursts getLogs and trips -32005.
+      await new Promise((resolve) => setTimeout(resolve, LOG_THROTTLE_MS));
     }
     return undefined;
   }

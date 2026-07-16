@@ -67,6 +67,12 @@ export async function readClaimable(config: ClientMarketConfig, account: Address
   return market.pendingWithdrawals(account);
 }
 
+// Upper bound on canary keys in an uploaded file, matching the contract's MAX_M cap
+// on m (sourceRef: contracts/src/DragnetMarket.sol MAX_M = 256). Rejecting an
+// oversized array up front stops a corrupted or hostile file from driving thousands
+// of synchronous secp256k1 multiplications in buildReveal and freezing the tab.
+const MAX_CANARY_KEYS = 256;
+
 // Parse an uploaded canary-keys file (the JSON the buyer downloaded when posting) into
 // the private keys, so the buyer can open the bounty. Accepts the 0x-hex keys the web
 // download writes and plain decimal keys the CLI writes. Rejects a mismatched bounty.
@@ -84,6 +90,9 @@ export function parseCanaryKeysFile(text: string, bountyId: bigint): Result<bigi
   const rawKeys = record.canaries ?? record.canaryKeys;
   if (!Array.isArray(rawKeys) || rawKeys.length === 0) {
     return err("that file has no canary keys");
+  }
+  if (rawKeys.length > MAX_CANARY_KEYS) {
+    return err(`that file has ${rawKeys.length} keys, more than the maximum of ${MAX_CANARY_KEYS}`);
   }
   if (typeof record.bountyId === "string" && record.bountyId !== bountyId.toString()) {
     return err(`those keys are for bounty ${record.bountyId}, not bounty ${bountyId}`);

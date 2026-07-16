@@ -29,7 +29,10 @@ type Busy = "open" | "slash" | "withdraw" | null;
 // server detail payload stays unchanged. Nothing shows unless an action is available.
 export function BountyLifecycle({ bountyId }: { bountyId: string }) {
   const wallet = useWallet();
-  const [config, setConfig] = useState<ClientMarketConfig | null>(null);
+  // clientMarketConfig reads NEXT_PUBLIC_* env inlined at build time, so it returns the
+  // same value in SSR and on the client. Compute it during render (a lazy initializer)
+  // rather than in an effect; null (demo mode) hides this panel entirely.
+  const [config] = useState<ClientMarketConfig | null>(() => clientMarketConfig());
   const [facts, setFacts] = useState<BountyFacts | null>(null);
   const [claimable, setClaimable] = useState<bigint | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
@@ -39,12 +42,6 @@ export function BountyLifecycle({ bountyId }: { bountyId: string }) {
   const [keysLabel, setKeysLabel] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // clientMarketConfig reads NEXT_PUBLIC_* env inlined at build time; resolve it once
-  // on the client so a null (demo mode) result hides this panel entirely.
-  useEffect(() => {
-    setConfig(clientMarketConfig());
-  }, []);
 
   const address = wallet.address;
 
@@ -57,6 +54,10 @@ export function BountyLifecycle({ bountyId }: { bountyId: string }) {
       return;
     }
     let ignore = false;
+    // A refresh after a completed action (refreshToken > 0) must not leave a stale
+    // action card showing if the re-read fails, so surface that error rather than
+    // silently keeping the pre-action facts.
+    const isRefresh = refreshToken > 0;
     const load = async () => {
       let numericId: bigint;
       try {
@@ -76,6 +77,8 @@ export function BountyLifecycle({ bountyId }: { bountyId: string }) {
           openDeadlineSec: Number(bounty.value.openDeadline),
           escrow: formatMon(bounty.value.payout + bounty.value.bond),
         });
+      } else if (isRefresh) {
+        setError(`could not refresh the bounty: ${bounty.error}`);
       }
       if (address !== null && isAddress(address)) {
         const owed = await readClaimable(config, address);
@@ -115,6 +118,11 @@ export function BountyLifecycle({ bountyId }: { bountyId: string }) {
 
   const settled = (tx: Hex, message: string) => {
     setNotice(`${message} (${truncateHex(tx, 8, 5)})`);
+    // Clear the pre-action facts and balance so no actionable card (the withdraw card,
+    // or an open/slash card) can linger against stale state if the refresh read is slow
+    // or fails; the refreshToken bump re-reads both and repopulates the truth.
+    setFacts(null);
+    setClaimable(null);
     setRefreshToken((current) => current + 1);
   };
 

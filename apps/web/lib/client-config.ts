@@ -15,15 +15,35 @@ export interface ClientMarketConfig {
   deployBlock: bigint;
 }
 
+// See market-data.ts: a deploy block of 0 (env unset or malformed) forces client-side
+// event scans (fetchTargetList) to page back toward genesis, slow on a live network.
+// Warn once in the browser console rather than defaulting silently.
+let deployBlockWarned = false;
+function warnDeployBlockOnce(reason: string): void {
+  if (deployBlockWarned) {
+    return;
+  }
+  deployBlockWarned = true;
+  console.warn(
+    `[client-config] ${reason}; defaulting to block 0. Set NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK to the market's deployment block so event scans stay bounded.`,
+  );
+}
+
 function parseDeployBlock(): bigint {
   const raw = process.env.NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK;
   if (raw === undefined || raw.length === 0) {
+    warnDeployBlockOnce("NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK is not set");
     return 0n;
   }
   try {
     const parsed = BigInt(raw);
-    return parsed < 0n ? 0n : parsed;
+    if (parsed < 0n) {
+      warnDeployBlockOnce(`NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK is negative (${raw})`);
+      return 0n;
+    }
+    return parsed;
   } catch {
+    warnDeployBlockOnce(`NEXT_PUBLIC_DRAGNET_DEPLOY_BLOCK is not a valid integer (${raw})`);
     return 0n;
   }
 }
